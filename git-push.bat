@@ -29,7 +29,7 @@ git commit -m "%MSG%"
 
 echo.
 echo Pushing to GitHub...
-git push -u origin main
+git push -u origin main --force
 
 echo.
 echo Done! Check https://github.com/jsunny-ai/GeoBIM

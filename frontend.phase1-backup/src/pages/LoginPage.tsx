@@ -1,0 +1,73 @@
+import { useState } from "react"
+import { useNavigate } from "react-router-dom"
+
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+
+export default function LoginPage() {
+  const navigate = useNavigate()
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    navigate("/projects")
+  }
+
+  return (
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.08),_transparent_55%)]" />
+
+      <Card className="relative w-full max-w-sm border-border/60 shadow-2xl">
+        <CardHeader className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="h-7 w-7 rounded bg-gradient-to-br from-sky-400 to-indigo-500" />
+            <CardTitle className="text-xl">GeoBIM Stratum</CardTitle>
+          </div>
+          <CardDescription>로그인하여 시추 데이터를 확인하세요.</CardDescription>
+        </CardHeader>
+
+        <form onSubmit={handleSubmit}>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">이메일</Label>
+              <Input
+                id="email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">비밀번호</Label>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+          </CardContent>
+          <CardFooter>
+            <Button type="submit" className="w-full">
+              로그인
+            </Button>
+          </CardFooter>
+        </form>
+      </Card>
+    </main>
+  )
+}

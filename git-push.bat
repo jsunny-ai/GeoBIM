@@ -29,7 +29,8 @@ git commit -m "%MSG%"
 
 echo.
 echo Pushing to GitHub...
-git push -u origin main --force
+git pull origin main --allow-unrelated-histories
+git push -u origin main
 
 echo.
 echo Done! Check https://github.com/jsunny-ai/GeoBIM

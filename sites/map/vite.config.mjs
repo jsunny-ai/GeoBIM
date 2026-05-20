@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 import { createRequire } from "node:module"
 import react from "@vitejs/plugin-react"
+import cesium from "vite-plugin-cesium"
 import { defineConfig } from "vite"
 
 const _require = createRequire(import.meta.url)
@@ -13,7 +14,7 @@ const autoprefixer = _require("autoprefixer")
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), cesium()],
   css: {
     postcss: {
       plugins: [tailwindcss(tailwindConfig), autoprefixer()],

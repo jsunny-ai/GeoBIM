@@ -14,6 +14,8 @@ from app.core.security import decode_token
 from app.models import User
 
 
+from app.core.config import settings
+
 async def get_current_user(
     db: AsyncSession = Depends(get_db),
     access_token: str | None = Cookie(default=None),
@@ -23,6 +25,12 @@ async def get_current_user(
     토큰이 없거나 유효하지 않으면 401 반환.
     """
     if access_token is None:
+        if settings.environment == "development":
+            # 개발 환경에서는 테스트 편의를 위해 토큰이 없으면 첫 번째 유저 반환
+            result = await db.execute(select(User).where(User.is_active.is_(True)).limit(1))
+            mock_user = result.scalar_one_or_none()
+            if mock_user:
+                return mock_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",

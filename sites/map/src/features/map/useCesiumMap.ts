@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import * as Cesium from "cesium"
-import "cesium/Source/Widgets/widgets.css"
+import "cesium/Build/Cesium/Widgets/widgets.css"
 import type { Borehole } from "@/lib/types"
 
 // 지층 구분별 색상 매핑 — 지질 톤, moderate_rock 제거 (보통암 → 경암 통합)

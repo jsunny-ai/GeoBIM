@@ -26,7 +26,8 @@
     "tailwind-merge": "^3.6.0",
     "react-router-dom": "^6.28.2",
     "@loaders.gl/core": "^4.1.4",
-    "@loaders.gl/gltf": "^4.1.4"
+    "@loaders.gl/gltf": "^4.1.4",
+    "three": "^0.169.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -44,6 +45,7 @@
     "typescript": "~6.0.2",
     "vite": "^6.4.2",
     "vite-plugin-cesium": "^1.2.22",
-    "@types/react-router-dom": "^5.3.3"
+    "@types/react-router-dom": "^5.3.3",
+    "@types/three": "^0.169.0"
   }
 }

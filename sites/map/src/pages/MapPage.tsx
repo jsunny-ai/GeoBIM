@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, useMemo } from "react"
 import "cesium/Build/Cesium/Widgets/widgets.css"
 import { Pen, X } from "lucide-react"
 import { useCesiumMap } from "@/features/map/useCesiumMap"
@@ -58,6 +58,34 @@ export default function MapPage() {
   const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing } =
     useCesiumMap(containerRef, filteredBoreholes)
 
+  // polygon 좌표 배열로부터 BBOX(minLng, minLat, maxLng, maxLat)를 실시간 산출하는 헬퍼
+  const calculatedBbox = useMemo<[number, number, number, number] | null>(() => {
+    if (!polygon || polygon.length === 0) return null
+    let minLng = Number.POSITIVE_INFINITY
+    let minLat = Number.POSITIVE_INFINITY
+    let maxLng = Number.NEGATIVE_INFINITY
+    let maxLat = Number.NEGATIVE_INFINITY
+
+    polygon.forEach((pt) => {
+      if (pt.lng < minLng) minLng = pt.lng
+      if (pt.lat < minLat) minLat = pt.lat
+      if (pt.lng > maxLng) maxLng = pt.lng
+      if (pt.lat > maxLat) maxLat = pt.lat
+    })
+
+    return [minLng, minLat, maxLng, maxLat]
+  }, [polygon])
+
+  // 2단계 3D 솔리드 뷰어(5173포트)로 BBOX 및 시추공 파라미터를 물고 도약하는 함수
+  const handleProceedToStep2 = () => {
+    if (!calculatedBbox) return
+    const bboxStr = calculatedBbox.map((v) => v.toFixed(6)).join(",")
+    const bhIdsStr = selectedBoreholes.map((b) => b.id).join(",")
+    const polyStr = JSON.stringify(polygon)
+
+    window.location.href = `http://localhost:5173/?bbox=${bboxStr}&boreholeIds=${bhIdsStr}&polygon=${encodeURIComponent(polyStr)}`
+  }
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100vh", background: "#0f172a" }}>
       {/* Cesium 3D 뷰어 컨테이너 */}
@@ -69,13 +97,15 @@ export default function MapPage() {
           position: "absolute",
           top: 12,
           left: 12,
-          width: 220,
+          width: 270,
           display: "flex",
           flexDirection: "column",
-          gap: 10,
+          gap: 12,
           zIndex: 10,
         }}
       >
+
+
         {/* 프로젝트 필터 패널 */}
         <div
           style={{
@@ -92,7 +122,7 @@ export default function MapPage() {
           </div>
           <div
             style={{
-              maxHeight: 220,
+              maxHeight: 180,
               overflowY: "auto",
               fontSize: 12,
             }}
@@ -190,10 +220,57 @@ export default function MapPage() {
               <Pen size={14} /> 영역 그리기 시작
             </button>
           )}
-          {selectedBoreholes.length > 0 && (
-            <div style={{ marginTop: 8, fontSize: 11, color: "#94a3b8" }}>
-              선택된 시추공: <strong style={{ color: "#38bdf8" }}>{selectedBoreholes.length}</strong>개
+
+          {/* 선택 영역 세부 정보 패널 */}
+          {calculatedBbox && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "8px 10px",
+                background: "rgba(16, 24, 39, 0.6)",
+                borderRadius: 6,
+                border: "1px solid rgba(255,255,255,0.06)",
+                fontSize: 11,
+                color: "#cbd5e1",
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 6, color: "#fff" }}>선택 영역 좌표</div>
+              <div style={{ display: "flex", justifyContent: "space-between", margin: "2px 0" }}>
+                <span>경도 범위</span>
+                <span>{calculatedBbox[0].toFixed(4)}° ~ {calculatedBbox[2].toFixed(4)}°</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", margin: "2px 0" }}>
+                <span>위도 범위</span>
+                <span>{calculatedBbox[1].toFixed(4)}° ~ {calculatedBbox[3].toFixed(4)}°</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", margin: "4px 0 0 0", paddingTop: 4, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                <span>포함 시추공</span>
+                <span style={{ color: "#38bdf8", fontWeight: 700 }}>{selectedBoreholes.length} 개</span>
+              </div>
             </div>
+          )}
+
+          {/* 2단계 진행 확인 버튼 */}
+          {calculatedBbox && (
+            <button
+              onClick={handleProceedToStep2}
+              style={{
+                width: "100%",
+                padding: "10px 0",
+                marginTop: 10,
+                borderRadius: 6,
+                border: "1px solid #22c55e",
+                background: "#22c55e",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+                transition: "background 0.2s",
+                boxShadow: "0 4px 12px rgba(34, 197, 94, 0.3)",
+              }}
+            >
+              확인 ➡️ 2단계 진행 (3D 생성)
+            </button>
           )}
         </div>
       </div>

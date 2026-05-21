@@ -19,6 +19,13 @@ const VWORLD_KEY = import.meta.env.VITE_VWORLD_KEY || "A5DB0E26-36FA-35BE-8E1A-2
 export function useCesiumMap(
   containerRef: React.RefObject<HTMLDivElement | null>,
   boreholes: Borehole[],
+  basemap: string = "Base",
+  vexag: number = 15,
+  radius: number = 10,
+  alpha: number = 235,
+  zMode: "gl" | "absolute" = "gl",
+  layerVisible: boolean[] = [true, true, true, true],
+  showColumns: boolean = true,
   onBoreholeClick?: (borehole: Borehole) => void,
 ) {
   const viewerRef = useRef<Cesium.Viewer | null>(null)
@@ -33,6 +40,8 @@ export function useCesiumMap(
   const activePolygonRef = useRef<Cesium.Entity | null>(null)
   const drawingPointsRef = useRef<Cesium.Cartesian3[]>([])
   const boreholesEntitiesRef = useRef<Cesium.Entity[]>([])
+  const vworldLayerRef = useRef<Cesium.ImageryLayer | null>(null)
+  const clusterDataSourceRef = useRef<Cesium.CustomDataSource | null>(null)
 
   // 1. Cesium Viewer 초기화 및 V-World 타일 적용
   useEffect(() => {
@@ -70,10 +79,11 @@ export function useCesiumMap(
       fullscreenButton: false,
       requestRenderMode: true,
       maximumRenderTimeChange: Infinity,
+      sceneMode: Cesium.SceneMode.SCENE2D, // 2D 평면 맵 모드로 구동 설정
     })
 
-    // 한반도 영역 위성지도를 최상단에 추가
-    viewer.imageryLayers.addImageryProvider(vworldSatellite)
+    // 초기 한반도 영역 지도를 최상단에 추가
+    vworldLayerRef.current = viewer.imageryLayers.addImageryProvider(vworldSatellite)
 
     viewerRef.current = viewer
     
@@ -91,14 +101,32 @@ export function useCesiumMap(
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
     handlerRef.current = handler
 
-    // 시추공 클릭 감지 및 핸들링
+    // 시추공 및 클러스터 클릭 감지
     handler.setInputAction((click: any) => {
       const pickedObject = viewer.scene.pick(click.position)
       if (Cesium.defined(pickedObject) && pickedObject.id) {
-        const entityId = pickedObject.id.id
-        const bh = boreholes.find((b) => `bh-${b.id}` === entityId)
-        if (bh && onBoreholeClick) {
-          onBoreholeClick(bh)
+        const entity = pickedObject.id
+        
+        // 1. 클러스터(숫자 원)를 클릭한 경우 지도를 해당 위치로 확대
+        if (entity.label && entity.label.text) {
+          const position = entity.position.getValue(viewer.clock.currentTime)
+          if (position) {
+            viewer.camera.flyTo({
+              destination: position,
+              duration: 1.0,
+              offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-90), 1000), // 수직으로 1000m 위에서 바라보도록 확대
+            })
+          }
+          return
+        }
+
+        // 2. 개별 시추공 포인트(Point)를 클릭한 경우
+        const entityId = entity.id
+        if (typeof entityId === "string" && entityId.startsWith("bh-")) {
+          const bh = boreholes.find((b) => `bh-${b.id}` === entityId)
+          if (bh && onBoreholeClick) {
+            onBoreholeClick(bh)
+          }
         }
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
@@ -115,63 +143,126 @@ export function useCesiumMap(
     }
   }, [containerRef, boreholes, onBoreholeClick])
 
-  // 2. 시추공 3D 실린더 및 디스크 렌더링
+  // 1-1. 배경지도(basemap) 변경 시 V-World 레이어 교체
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer) return
 
-    // 기존 시추공 엔티티 제거
+    // OSM은 유지해야 하므로, basemap이 osm이면 vworld 레이어만 제거
+    if (vworldLayerRef.current) {
+      viewer.imageryLayers.remove(vworldLayerRef.current)
+      vworldLayerRef.current = null
+    }
+
+    if (basemap !== "osm") {
+      const newProvider = new Cesium.UrlTemplateImageryProvider({
+        url: `/api/v1/tiles/vworld/${basemap}/{z}/{x}/{y}`,
+        credit: `V-World ${basemap} Map`,
+        minimumLevel: 6,
+        maximumLevel: 19,
+        rectangle: Cesium.Rectangle.fromDegrees(124.0, 31.0, 132.0, 43.0),
+      })
+      vworldLayerRef.current = viewer.imageryLayers.addImageryProvider(newProvider)
+    }
+    
+    viewer.scene.requestRender()
+  }, [basemap])
+
+  // 2. 시추공 데이터 렌더링 (클러스터링 포인트 + 지하 실린더)
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer) return
+
+    // 지하 3D 실린더 엔티티 초기화
     boreholesEntitiesRef.current.forEach((entity) => viewer.entities.remove(entity))
     boreholesEntitiesRef.current = []
 
-    boreholes.forEach((b) => {
-      let currentDepth = 0
-      const centerCartesian = Cesium.Cartesian3.fromDegrees(b.longitude, b.latitude, b.elevation || 0)
+    // 데이터소스(클러스터링용) 초기화
+    if (clusterDataSourceRef.current) {
+      viewer.dataSources.remove(clusterDataSourceRef.current)
+      clusterDataSourceRef.current = null
+    }
 
-      // 지표면 디스크 (시추공 위치 마커)
-      const diskEntity = viewer.entities.add({
+    const dataSource = new Cesium.CustomDataSource("boreholes")
+    clusterDataSourceRef.current = dataSource
+
+    // 클러스터링 비활성화 (모든 마커를 개별적으로 지도에 표기)
+    dataSource.clustering.enabled = false
+
+    viewer.dataSources.add(dataSource)
+
+    const SOIL_TYPE_TO_INDEX: Record<string, number> = {
+      soil: 0,
+      weathered_rock: 1,
+      soft_rock: 2,
+      hard_rock: 3,
+    }
+
+    boreholes.forEach((b) => {
+      const elev = b.elevation || 0
+      const groundZ = zMode === 'gl' ? 0.5 : elev * vexag + 0.5
+      const centerCartesian = Cesium.Cartesian3.fromDegrees(b.longitude, b.latitude, groundZ)
+
+      // 지표면 회색 점 마커 🔘
+      dataSource.entities.add({
         id: `bh-${b.id}`,
         position: centerCartesian,
-        ellipse: {
-          semiMinorAxis: 15.0,
-          semiMajorAxis: 15.0,
-          material: Cesium.Color.GOLD.withAlpha(0.85),
-          outline: true,
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 2.0,
-          height: b.elevation || 0,
+        point: {
+          pixelSize: 8,
+          color: Cesium.Color.fromCssColorString("#7F8C8D"), // 은회색 계열
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 1.5,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY, // 항상 지표면 위에 표현
+          scaleByDistance: new Cesium.NearFarScalar(1500, 1.0, 15000, 0.25),
         },
+        label: {
+          text: b.name,
+          font: "11px sans-serif",
+          fillColor: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          pixelOffset: new Cesium.Cartesian2(0, -12), // 회색 점 위쪽으로 텍스트 오프셋 조정
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 3000), // 3000m 이상 멀어지면 이름 숨김
+        }
       })
-      boreholesEntitiesRef.current.push(diskEntity)
 
-      // 3D 지층 실린더 (적층형 기둥 구조)
-      b.strata.forEach((stratum, idx) => {
-        const thickness = stratum.depth_bottom - stratum.depth_top
-        if (thickness <= 0) return
+      // 지하 3D 실린더 지층 컬럼 렌더링
+      if (showColumns && b.strata && b.strata.length > 0) {
+        b.strata.forEach((s) => {
+          const idx = SOIL_TYPE_TO_INDEX[s.soil_type] ?? 0
+          // 지층 가시성 체크
+          if (!layerVisible[idx]) return
 
-        const depthCenter = currentDepth + thickness / 2
-        const cylinderHeight = b.elevation - depthCenter
-        const color = SOIL_COLORS[stratum.soil_type] || DEFAULT_COLOR
+          const thickness = s.depth_bottom - s.depth_top
+          if (thickness <= 0) return
 
-        const stratumCylinder = viewer.entities.add({
-          position: Cesium.Cartesian3.fromDegrees(b.longitude, b.latitude, cylinderHeight),
-          cylinder: {
-            length: thickness,
-            topRadius: 4.5,
-            bottomRadius: 4.5,
-            material: color,
-            outline: true,
-            outlineColor: Cesium.Color.BLACK.withAlpha(0.5),
-            outlineWidth: 1.0,
-          },
+          // 수직 과장이 적용된 기하학적 실린더 길이 및 고도 계산
+          const len = thickness * vexag
+          const midDepth = (s.depth_top + s.depth_bottom) / 2
+          const z = zMode === 'gl' ? -midDepth * vexag : (elev - midDepth) * vexag
+
+          const cylinderCenter = Cesium.Cartesian3.fromDegrees(b.longitude, b.latitude, z)
+          const color = SOIL_COLORS[s.soil_type] || DEFAULT_COLOR
+
+          const cylinderEntity = viewer.entities.add({
+            id: `cylinder-${b.id}-${s.id}`,
+            position: cylinderCenter,
+            cylinder: {
+              length: len,
+              topRadius: radius,
+              bottomRadius: radius,
+              material: color.withAlpha(alpha / 255),
+              heightReference: Cesium.HeightReference.NONE,
+            }
+          })
+          boreholesEntitiesRef.current.push(cylinderEntity)
         })
-        boreholesEntitiesRef.current.push(stratumCylinder)
-        currentDepth = stratum.depth_bottom
-      })
+      }
     })
 
     viewer.scene.requestRender()
-  }, [boreholes])
+  }, [boreholes, vexag, radius, alpha, zMode, layerVisible, showColumns])
 
   // 3. 영역 그리기 (다각형 드로잉 도구)
   const startDrawing = () => {

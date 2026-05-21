@@ -38,8 +38,9 @@ export default function MapPage() {
   const [allBoreholes, setAllBoreholes]   = useState<Borehole[]>([])
   const [projects, setProjects]           = useState<Project[]>([])
   const [status, setStatus]               = useState("초기화 중...")
-  const [showMarkers, setShowMarkers]     = useState(true)
+  const [showMarkers, setShowMarkers]       = useState(true)
   const [selectedBorehole, setSelectedBorehole] = useState<Borehole | null>(null)
+  const [bhLoading, setBhLoading]           = useState(false)
 
   // ── 데이터 로드 ──────────────────────────────────────────
   useEffect(() => {
@@ -78,10 +79,23 @@ export default function MapPage() {
     : allBoreholes
 
   // ── Cesium 훅 ────────────────────────────────────────────
+  const handleBoreholeClick = useCallback(async (bh: Borehole) => {
+    setSelectedBorehole(bh)   // 즉시 패널 표시 (기본 정보)
+    setBhLoading(true)
+    try {
+      const res = await fetch(`/api/v1/boreholes/${bh.id}`)
+      if (res.ok) {
+        const detail: Borehole = await res.json()
+        setSelectedBorehole(detail)  // strata 포함 전체 정보로 갱신
+      }
+    } catch {}
+    finally { setBhLoading(false) }
+  }, [])
+
   const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing } =
     useCesiumMap(containerRef, showMarkers ? filteredBoreholes : [], "Base",
       15, 10, 235, "gl", [true,true,true,true],
-      (bh) => setSelectedBorehole(bh)
+      handleBoreholeClick
     )
 
   // ── BBOX (도 단위) ───────────────────────────────────────
@@ -213,6 +227,7 @@ export default function MapPage() {
       {selectedBorehole && (
         <BoreholePanel
           borehole={selectedBorehole}
+          loading={bhLoading}
           onClose={() => setSelectedBorehole(null)}
         />
       )}
@@ -289,7 +304,7 @@ const STRATA_LABEL: Record<string, string> = {
   hard_rock:     "경암",
 }
 
-function BoreholePanel({ borehole, onClose }: { borehole: Borehole; onClose: () => void }) {
+function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loading?: boolean; onClose: () => void }) {
   const sorted = [...(borehole.strata ?? [])].sort((a, b) => a.depth_top - b.depth_top)
   const totalDepth = sorted.length ? Math.max(...sorted.map((s) => s.depth_bottom)) : 0
   const LOG_H = 220 // px
@@ -334,7 +349,11 @@ function BoreholePanel({ borehole, onClose }: { borehole: Borehole; onClose: () 
         </div>
 
         {/* 지층 시각화 */}
-        {sorted.length > 0 ? (
+        {loading ? (
+          <div style={{ fontSize: 11, color: C.tertiary, textAlign: "center", padding: "12px 0" }}>
+            지층 데이터 로드 중...
+          </div>
+        ) : sorted.length > 0 ? (
           <>
             <div style={{ fontSize: 11, color: C.tertiary, marginBottom: 6 }}>지층 구성</div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -348,7 +367,8 @@ function BoreholePanel({ borehole, onClose }: { borehole: Borehole; onClose: () 
                 {sorted.map((s, i) => {
                   const thickness = s.depth_bottom - s.depth_top
                   const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
-                  const col = STRATA_COLOR[s.strata_group ?? ""] ?? "#888"
+                  const grp = s.strata_group && s.strata_group !== "unknown" ? s.strata_group : null
+                  const col = grp ? (STRATA_COLOR[grp] ?? "#888") : "#888"
                   return (
                     <div key={i} style={{
                       width: "100%", height: heightPx,
@@ -364,8 +384,9 @@ function BoreholePanel({ borehole, onClose }: { borehole: Borehole; onClose: () 
                   const thickness = s.depth_bottom - s.depth_top
                   const topPx = totalDepth > 0 ? (s.depth_top / totalDepth) * LOG_H : 0
                   const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
-                  const col = STRATA_COLOR[s.strata_group ?? ""] ?? "#888"
-                  const lbl = STRATA_LABEL[s.strata_group ?? ""] ?? s.strata_group ?? s.soil_type
+                  const grp = s.strata_group && s.strata_group !== "unknown" ? s.strata_group : null
+                  const col = grp ? (STRATA_COLOR[grp] ?? "#888") : "#888"
+                  const lbl = grp ? (STRATA_LABEL[grp] ?? grp) : (s.soil_type || "unknown")
                   return (
                     <div key={i} style={{
                       position: "absolute", top: topPx, left: 0, right: 0,
@@ -408,12 +429,20 @@ function BoreholePanel({ borehole, onClose }: { borehole: Borehole; onClose: () 
             {/* 범례 */}
             <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: "4px 8px" }}>
               {sorted
-                .filter((s, i, arr) => arr.findIndex((x) => x.strata_group === s.strata_group) === i)
+                .filter((s, i, arr) => {
+                  const key = (s.strata_group && s.strata_group !== "unknown") ? s.strata_group : s.soil_type
+                  return arr.findIndex((x) => {
+                    const xKey = (x.strata_group && x.strata_group !== "unknown") ? x.strata_group : x.soil_type
+                    return xKey === key
+                  }) === i
+                })
                 .map((s) => {
-                  const col = STRATA_COLOR[s.strata_group ?? ""] ?? "#888"
-                  const lbl = STRATA_LABEL[s.strata_group ?? ""] ?? s.strata_group ?? s.soil_type
+                  const grp = s.strata_group && s.strata_group !== "unknown" ? s.strata_group : null
+                  const col = grp ? (STRATA_COLOR[grp] ?? "#888") : "#888"
+                  const lbl = grp ? (STRATA_LABEL[grp] ?? grp) : (s.soil_type || "unknown")
+                  const key = grp ?? s.soil_type
                   return (
-                    <div key={s.strata_group} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                    <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
                       <span style={{ width: 10, height: 10, borderRadius: 2, background: col, display: "inline-block" }} />
                       <span style={{ color: C.secondary }}>{lbl}</span>
                     </div>

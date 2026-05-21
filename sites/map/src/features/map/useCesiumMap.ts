@@ -98,22 +98,17 @@ export function useCesiumMap(
         
         const entityId = entity.id
 
-        // 1. 개별 시추공 포인트 클릭 — ID 우선 체크
+        // 개별 시추공 포인트 클릭 — 패널 표시 + 줌인
         if (typeof entityId === "string" && entityId.startsWith("bh-")) {
           const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
-          if (bh && onBoreholeClickRef.current) {
-            onBoreholeClickRef.current(bh)
-          }
-          return
-        }
-
-        // 2. 클러스터(숫자 원) 클릭 — 해당 위치로 줌인
-        if (entity.label && entity.label.text) {
-          const position = entity.position.getValue(viewer.clock.currentTime)
-          if (position) {
-            const carto = Cesium.Cartographic.fromCartesian(position)
-            const destination = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, 1000)
-            viewer.camera.flyTo({ destination, duration: 1.0 })
+          if (bh) {
+            if (onBoreholeClickRef.current) {
+              onBoreholeClickRef.current(bh)
+            }
+            viewer.camera.flyTo({
+              destination: Cesium.Cartesian3.fromDegrees(bh.longitude, bh.latitude, 1500),
+              duration: 1.0,
+            })
           }
         }
       }

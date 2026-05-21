@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react"
 import "cesium/Build/Cesium/Widgets/widgets.css"
 import * as Cesium from "cesium"
 import { useCesiumMap } from "@/features/map/useCesiumMap"
-import type { Borehole, Project, BoreholeApiResponse } from "@/lib/types"
+import type { Borehole, Project, BoreholeApiResponse, Stratum } from "@/lib/types"
 
 // ── KH_Geo 색상 팔레트 ────────────────────────────────────────
 const C = {
@@ -39,6 +39,7 @@ export default function MapPage() {
   const [projects, setProjects]           = useState<Project[]>([])
   const [status, setStatus]               = useState("초기화 중...")
   const [showMarkers, setShowMarkers]     = useState(true)
+  const [selectedBorehole, setSelectedBorehole] = useState<Borehole | null>(null)
 
   // ── 데이터 로드 ──────────────────────────────────────────
   useEffect(() => {
@@ -78,7 +79,10 @@ export default function MapPage() {
 
   // ── Cesium 훅 ────────────────────────────────────────────
   const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing } =
-    useCesiumMap(containerRef, showMarkers ? filteredBoreholes : [], "Base")
+    useCesiumMap(containerRef, showMarkers ? filteredBoreholes : [], "Base",
+      15, 10, 235, "gl", [true,true,true,true],
+      (bh) => setSelectedBorehole(bh)
+    )
 
   // ── BBOX (도 단위) ───────────────────────────────────────
   const bbox = useMemo<{ sw: [number,number]; ne: [number,number] } | null>(() => {
@@ -205,6 +209,14 @@ export default function MapPage() {
         )}
       </div>
 
+      {/* ── 시추공 정보 패널 ─────────────────────────────────── */}
+      {selectedBorehole && (
+        <BoreholePanel
+          borehole={selectedBorehole}
+          onClose={() => setSelectedBorehole(null)}
+        />
+      )}
+
       {/* ── 우상단 힌트 ─────────────────────────────────────── */}
       <div style={{
         position: "absolute", top: 14, right: 14, zIndex: 10,
@@ -259,6 +271,162 @@ function InfoRow({ label, value, valueStyle }: {
     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 12 }}>
       <span style={{ color: "#8a9bb8" }}>{label}</span>
       <span style={{ color: "#cbd5e1", ...valueStyle }}>{value}</span>
+    </div>
+  )
+}
+
+// ── 지층 색상 ────────────────────────────────────────────────────────
+const STRATA_COLOR: Record<string, string> = {
+  soil:          "#8b7355",
+  weathered_rock:"#c4a57b",
+  soft_rock:     "#6b8e5a",
+  hard_rock:     "#3d3d3d",
+}
+const STRATA_LABEL: Record<string, string> = {
+  soil:          "토사",
+  weathered_rock:"풍화암",
+  soft_rock:     "연암",
+  hard_rock:     "경암",
+}
+
+function BoreholePanel({ borehole, onClose }: { borehole: Borehole; onClose: () => void }) {
+  const sorted = [...(borehole.strata ?? [])].sort((a, b) => a.depth_top - b.depth_top)
+  const totalDepth = sorted.length ? Math.max(...sorted.map((s) => s.depth_bottom)) : 0
+  const LOG_H = 220 // px
+
+  return (
+    <div style={{
+      position: "absolute", bottom: 14, right: 14, width: 260, zIndex: 20,
+      background: "rgba(15,20,32,.97)", border: `1px solid ${C.border}`,
+      borderRadius: 10, boxShadow: "0 4px 20px rgba(0,0,0,.6)",
+      color: C.text, fontFamily: "'Noto Sans KR',-apple-system,sans-serif",
+      overflow: "hidden",
+    }}>
+      {/* 헤더 */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "10px 14px", borderBottom: `1px solid ${C.border}`,
+        background: "rgba(36,115,189,.15)",
+      }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{borehole.name}</div>
+          <div style={{ fontSize: 11, color: C.tertiary, marginTop: 1 }}>
+            시추공 정보
+          </div>
+        </div>
+        <button onClick={onClose} style={{
+          background: "none", border: "none", color: C.tertiary,
+          fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px",
+        }}>×</button>
+      </div>
+
+      <div style={{ padding: "12px 14px" }}>
+        {/* 기본 정보 */}
+        <div style={{
+          padding: "8px 10px", background: C.inner,
+          borderRadius: 6, border: `1px solid ${C.border}`, marginBottom: 12,
+        }}>
+          <InfoRow label="표고" value={borehole.elevation != null ? `${borehole.elevation.toFixed(1)} m` : "-"} />
+          <InfoRow label="위도" value={borehole.latitude.toFixed(5)} />
+          <InfoRow label="경도" value={borehole.longitude.toFixed(5)} />
+          <InfoRow label="총 심도" value={totalDepth > 0 ? `${totalDepth.toFixed(1)} m` : "-"} />
+          <InfoRow label="지층 수" value={`${sorted.length} 개`} />
+        </div>
+
+        {/* 지층 시각화 */}
+        {sorted.length > 0 ? (
+          <>
+            <div style={{ fontSize: 11, color: C.tertiary, marginBottom: 6 }}>지층 구성</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {/* 컬럼 바 */}
+              <div style={{
+                width: 32, height: LOG_H, borderRadius: 4,
+                overflow: "hidden", flexShrink: 0,
+                border: `1px solid ${C.border}`,
+                display: "flex", flexDirection: "column",
+              }}>
+                {sorted.map((s, i) => {
+                  const thickness = s.depth_bottom - s.depth_top
+                  const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
+                  const col = STRATA_COLOR[s.strata_group ?? ""] ?? "#888"
+                  return (
+                    <div key={i} style={{
+                      width: "100%", height: heightPx,
+                      background: col, flexShrink: 0,
+                    }} />
+                  )
+                })}
+              </div>
+
+              {/* 레이블 */}
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative", height: LOG_H }}>
+                {sorted.map((s, i) => {
+                  const thickness = s.depth_bottom - s.depth_top
+                  const topPx = totalDepth > 0 ? (s.depth_top / totalDepth) * LOG_H : 0
+                  const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
+                  const col = STRATA_COLOR[s.strata_group ?? ""] ?? "#888"
+                  const lbl = STRATA_LABEL[s.strata_group ?? ""] ?? s.strata_group ?? s.soil_type
+                  return (
+                    <div key={i} style={{
+                      position: "absolute", top: topPx, left: 0, right: 0,
+                      height: heightPx, overflow: "hidden",
+                      display: "flex", alignItems: "center", gap: 4,
+                    }}>
+                      {/* depth_top 마커 */}
+                      <div style={{
+                        position: "absolute", top: 0, left: 0, right: 0,
+                        fontSize: 9, color: C.tertiary, lineHeight: "10px",
+                      }}>
+                        {s.depth_top.toFixed(1)}m
+                      </div>
+                      {/* 레이블 (중앙) */}
+                      {heightPx > 22 && (
+                        <div style={{
+                          position: "absolute", top: "50%", transform: "translateY(-50%)",
+                          display: "flex", alignItems: "center", gap: 4,
+                        }}>
+                          <span style={{
+                            width: 8, height: 8, borderRadius: 2,
+                            background: col, flexShrink: 0, display: "inline-block",
+                          }} />
+                          <span style={{ fontSize: 11, color: C.secondary, whiteSpace: "nowrap" }}>{lbl}</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+                {/* 최하단 깊이 */}
+                <div style={{
+                  position: "absolute", bottom: 0, left: 0,
+                  fontSize: 9, color: C.tertiary,
+                }}>
+                  {totalDepth.toFixed(1)}m
+                </div>
+              </div>
+            </div>
+
+            {/* 범례 */}
+            <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: "4px 8px" }}>
+              {sorted
+                .filter((s, i, arr) => arr.findIndex((x) => x.strata_group === s.strata_group) === i)
+                .map((s) => {
+                  const col = STRATA_COLOR[s.strata_group ?? ""] ?? "#888"
+                  const lbl = STRATA_LABEL[s.strata_group ?? ""] ?? s.strata_group ?? s.soil_type
+                  return (
+                    <div key={s.strata_group} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 2, background: col, display: "inline-block" }} />
+                      <span style={{ color: C.secondary }}>{lbl}</span>
+                    </div>
+                  )
+                })}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 11, color: C.tertiary, textAlign: "center", padding: "12px 0" }}>
+            지층 데이터 없음
+          </div>
+        )}
+      </div>
     </div>
   )
 }

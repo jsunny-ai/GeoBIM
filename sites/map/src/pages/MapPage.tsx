@@ -293,15 +293,55 @@ function InfoRow({ label, value, valueStyle }: {
 // ── 지층 색상 ────────────────────────────────────────────────────────
 const STRATA_COLOR: Record<string, string> = {
   soil:          "#8b7355",
-  weathered_rock:"#c4a57b",
+  weathered_rock:"#deb887",
   soft_rock:     "#6b8e5a",
+  normal_rock:   "#4682b4",
   hard_rock:     "#3d3d3d",
+  unknown:       "#b4b4b4",
 }
+
 const STRATA_LABEL: Record<string, string> = {
   soil:          "토사",
   weathered_rock:"풍화암",
   soft_rock:     "연암",
+  normal_rock:   "보통암",
   hard_rock:     "경암",
+  unknown:       "미분류",
+}
+
+// 실시간 한글/영문 양방향 기반 지질학적 분류 파서
+function getStrataGroup(soilType: string, strataGroup?: string): string {
+  // 1단계: strata_group 이 이미 올바른 영문 규격인 경우
+  const grp = strataGroup || ""
+  if (["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock"].includes(grp)) {
+    return grp
+  }
+  
+  // 2단계: soil_type 자체가 영문 규격(예: 'soil', 'soft_rock')으로 저장되어 있는 경우 방어
+  const sType = (soilType || "").trim().toLowerCase()
+  if (["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock"].includes(sType)) {
+    return sType
+  }
+  
+  // 3단계: 한글 지층명 파싱 및 정규화
+  const cleaned = sType.replace(/\s+/g, "").replace(/\(.*?\)/g, "").replace(/[^가-힣]/g, "")
+  
+  if (["토사", "매립토", "매립층", "퇴적토", "퇴적층", "충적층", "붕적층", "풍화토", "잔류토", "실트", "모래", "자갈", "점토"].some(k => cleaned.includes(k))) {
+    return "soil"
+  }
+  if (["풍화암", "풍화대", "풍화기반암"].some(k => cleaned.includes(k))) {
+    return "weathered_rock"
+  }
+  if (["연암", "리핑암"].some(k => cleaned.includes(k))) {
+    return "soft_rock"
+  }
+  if (["보통암", "중암"].some(k => cleaned.includes(k))) {
+    return "normal_rock"
+  }
+  if (["경암", "발파암", "극경암"].some(k => cleaned.includes(k))) {
+    return "hard_rock"
+  }
+  return "unknown"
 }
 
 function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loading?: boolean; onClose: () => void }) {
@@ -356,10 +396,36 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
         ) : sorted.length > 0 ? (
           <>
             <div style={{ fontSize: 11, color: C.tertiary, marginBottom: 6 }}>지층 구성</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {/* 컬럼 바 */}
+            <div style={{ display: "flex", gap: 6, position: "relative" }}>
+              {/* 1단 (왼쪽): 심도 숫자 컬럼 */}
+              <div style={{ width: 35, position: "relative", height: LOG_H, flexShrink: 0 }}>
+                {sorted.map((s, i) => {
+                  const distFromBottomPx = totalDepth > 0 ? ((totalDepth - s.depth_top) / totalDepth) * LOG_H : 100
+                  const showDepthTop = distFromBottomPx >= 16
+                  const topPx = totalDepth > 0 ? (s.depth_top / totalDepth) * LOG_H : 0
+                  
+                  return showDepthTop ? (
+                    <div key={i} style={{
+                      position: "absolute", top: topPx, right: 0,
+                      fontSize: 9, color: C.tertiary, lineHeight: "10px",
+                      textAlign: "right", whiteSpace: "nowrap",
+                    }}>
+                      {s.depth_top.toFixed(1)}m
+                    </div>
+                  ) : null
+                })}
+                {/* 최하단 깊이 */}
+                <div style={{
+                  position: "absolute", bottom: 0, right: 0,
+                  fontSize: 9, color: C.tertiary, textAlign: "right",
+                }}>
+                  {totalDepth.toFixed(1)}m
+                </div>
+              </div>
+
+              {/* 2단 (가운데): 지층 구성 기둥 (컬러 바) */}
               <div style={{
-                width: 32, height: LOG_H, borderRadius: 4,
+                width: 24, height: LOG_H, borderRadius: 4,
                 overflow: "hidden", flexShrink: 0,
                 border: `1px solid ${C.border}`,
                 display: "flex", flexDirection: "column",
@@ -367,8 +433,8 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
                 {sorted.map((s, i) => {
                   const thickness = s.depth_bottom - s.depth_top
                   const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
-                  const grp = s.strata_group && s.strata_group !== "unknown" ? s.strata_group : null
-                  const col = grp ? (STRATA_COLOR[grp] ?? "#888") : "#888"
+                  const grp = getStrataGroup(s.soil_type, s.strata_group)
+                  const col = STRATA_COLOR[grp] ?? STRATA_COLOR.unknown
                   return (
                     <div key={i} style={{
                       width: "100%", height: heightPx,
@@ -378,32 +444,24 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
                 })}
               </div>
 
-              {/* 레이블 */}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative", height: LOG_H }}>
+              {/* 3단 (오른쪽): 지층명 레이블 컬럼 */}
+              <div style={{ flex: 1, position: "relative", height: LOG_H }}>
                 {sorted.map((s, i) => {
                   const thickness = s.depth_bottom - s.depth_top
                   const topPx = totalDepth > 0 ? (s.depth_top / totalDepth) * LOG_H : 0
                   const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
-                  const grp = s.strata_group && s.strata_group !== "unknown" ? s.strata_group : null
-                  const col = grp ? (STRATA_COLOR[grp] ?? "#888") : "#888"
-                  const lbl = grp ? (STRATA_LABEL[grp] ?? grp) : (s.soil_type || "unknown")
+                  const grp = getStrataGroup(s.soil_type, s.strata_group)
+                  const col = STRATA_COLOR[grp] ?? STRATA_COLOR.unknown
+                  const lbl = STRATA_LABEL[grp] ?? s.soil_type
+                  
                   return (
                     <div key={i} style={{
-                      position: "absolute", top: topPx, left: 0, right: 0,
+                      position: "absolute", top: topPx, left: 4, right: 0,
                       height: heightPx, overflow: "hidden",
-                      display: "flex", alignItems: "center", gap: 4,
+                      display: "flex", alignItems: "center",
                     }}>
-                      {/* depth_top 마커 */}
-                      <div style={{
-                        position: "absolute", top: 0, left: 0, right: 0,
-                        fontSize: 9, color: C.tertiary, lineHeight: "10px",
-                      }}>
-                        {s.depth_top.toFixed(1)}m
-                      </div>
-                      {/* 레이블 (중앙) */}
                       {heightPx > 22 && (
                         <div style={{
-                          position: "absolute", top: "50%", transform: "translateY(-50%)",
                           display: "flex", alignItems: "center", gap: 4,
                         }}>
                           <span style={{
@@ -416,13 +474,6 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
                     </div>
                   )
                 })}
-                {/* 최하단 깊이 */}
-                <div style={{
-                  position: "absolute", bottom: 0, left: 0,
-                  fontSize: 9, color: C.tertiary,
-                }}>
-                  {totalDepth.toFixed(1)}m
-                </div>
               </div>
             </div>
 
@@ -430,19 +481,15 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
             <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: "4px 8px" }}>
               {sorted
                 .filter((s, i, arr) => {
-                  const key = (s.strata_group && s.strata_group !== "unknown") ? s.strata_group : s.soil_type
-                  return arr.findIndex((x) => {
-                    const xKey = (x.strata_group && x.strata_group !== "unknown") ? x.strata_group : x.soil_type
-                    return xKey === key
-                  }) === i
+                  const key = getStrataGroup(s.soil_type, s.strata_group)
+                  return arr.findIndex((x) => getStrataGroup(x.soil_type, x.strata_group) === key) === i
                 })
                 .map((s) => {
-                  const grp = s.strata_group && s.strata_group !== "unknown" ? s.strata_group : null
-                  const col = grp ? (STRATA_COLOR[grp] ?? "#888") : "#888"
-                  const lbl = grp ? (STRATA_LABEL[grp] ?? grp) : (s.soil_type || "unknown")
-                  const key = grp ?? s.soil_type
+                  const grp = getStrataGroup(s.soil_type, s.strata_group)
+                  const col = STRATA_COLOR[grp] ?? STRATA_COLOR.unknown
+                  const lbl = STRATA_LABEL[grp] ?? s.soil_type
                   return (
-                    <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                    <div key={grp} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
                       <span style={{ width: 10, height: 10, borderRadius: 2, background: col, display: "inline-block" }} />
                       <span style={{ color: C.secondary }}>{lbl}</span>
                     </div>

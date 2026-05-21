@@ -32,6 +32,12 @@ export function useCesiumMap(
   const vworldLayerRef = useRef<Cesium.ImageryLayer | null>(null)
   const clusterDataSourceRef = useRef<Cesium.CustomDataSource | null>(null)
 
+  // 클릭 핸들러 내부에서 최신 값을 읽기 위한 ref 미러 (init effect deps 제거용)
+  const boreholesRef = useRef(boreholes)
+  boreholesRef.current = boreholes
+  const onBoreholeClickRef = useRef(onBoreholeClick)
+  onBoreholeClickRef.current = onBoreholeClick
+
   // 1. Cesium Viewer 초기화 및 V-World 타일 적용
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return
@@ -104,9 +110,9 @@ export function useCesiumMap(
         // 2. 개별 시추공 포인트(Point)를 클릭한 경우
         const entityId = entity.id
         if (typeof entityId === "string" && entityId.startsWith("bh-")) {
-          const bh = boreholes.find((b) => `bh-${b.id}` === entityId)
-          if (bh && onBoreholeClick) {
-            onBoreholeClick(bh)
+          const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
+          if (bh && onBoreholeClickRef.current) {
+            onBoreholeClickRef.current(bh)
           }
         }
       }
@@ -122,7 +128,7 @@ export function useCesiumMap(
         viewerRef.current = null
       }
     }
-  }, [containerRef, boreholes, onBoreholeClick])
+  }, [containerRef]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 1-1. 배경지도(basemap) 변경 시 V-World 레이어 교체
   useEffect(() => {
@@ -300,9 +306,9 @@ export function useCesiumMap(
         const pickedObject = viewer.scene.pick(click.position)
         if (Cesium.defined(pickedObject) && pickedObject.id) {
           const entityId = pickedObject.id.id
-          const bh = boreholes.find((b) => `bh-${b.id}` === entityId)
-          if (bh && onBoreholeClick) {
-            onBoreholeClick(bh)
+          const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
+          if (bh && onBoreholeClickRef.current) {
+            onBoreholeClickRef.current(bh)
           }
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
@@ -355,9 +361,9 @@ export function useCesiumMap(
         const pickedObject = viewer.scene.pick(click.position)
         if (Cesium.defined(pickedObject) && pickedObject.id) {
           const entityId = pickedObject.id.id
-          const bh = boreholes.find((b) => `bh-${b.id}` === entityId)
-          if (bh && onBoreholeClick) {
-            onBoreholeClick(bh)
+          const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
+          if (bh && onBoreholeClickRef.current) {
+            onBoreholeClickRef.current(bh)
           }
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK)

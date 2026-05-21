@@ -363,12 +363,28 @@ export function useCesiumMap(
     viewer.scene.requestRender()
   }
 
+  const zoomIn = () => {
+    const v = viewerRef.current
+    if (!v) return
+    v.camera.zoomIn(v.camera.positionCartographic.height * 0.3)
+    v.scene.requestRender()
+  }
+
+  const zoomOut = () => {
+    const v = viewerRef.current
+    if (!v) return
+    v.camera.zoomOut(v.camera.positionCartographic.height * 0.5)
+    v.scene.requestRender()
+  }
+
   return {
     isDrawing,
     polygon,
     selectedBoreholes,
     startDrawing,
     cancelDrawing,
+    zoomIn,
+    zoomOut,
   }
 }
 

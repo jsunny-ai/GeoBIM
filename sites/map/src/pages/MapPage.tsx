@@ -1,20 +1,44 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react"
 import "cesium/Build/Cesium/Widgets/widgets.css"
-import { Pen, X } from "lucide-react"
+import * as Cesium from "cesium"
 import { useCesiumMap } from "@/features/map/useCesiumMap"
 import type { Borehole, Project, BoreholeApiResponse } from "@/lib/types"
+
+// ── 색상 팔레트 (KH_Geo 동일) ────────────────────────────────
+const C = {
+  bgDark:   "#0f172a",
+  panel:    "rgba(30, 41, 59, 0.95)",
+  panelAlt: "rgba(15, 23, 42, 0.95)",
+  border:   "rgba(255,255,255,0.1)",
+  text:     "#f8fafc",
+  muted:    "#94a3b8",
+  primary:  "#4f46e5",
+  accent:   "#10b981",
+  red:      "#ef4444",
+  logText:  "#a7f3d0",
+} as const
+
+const blur = "blur(10px)"
 
 export default function MapPage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [projectFilter, setProjectFilter] = useState<number | null>(null)
-
-  // API 상태
   const [allBoreholes, setAllBoreholes] = useState<Borehole[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
-  const [loadingBh, setLoadingBh] = useState(true)
-  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [projects, setProjects]           = useState<Project[]>([])
+  const [loadingBh, setLoadingBh]         = useState(true)
+  const [loadErr, setLoadErr]             = useState<string | null>(null)
 
-  // 시추공 전체 로드 (마운트 시 1회)
+  // 선택 패널 — 체크 상태
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
+
+  // 로그 패널
+  const [logCollapsed, setLogCollapsed] = useState(false)
+  const [logs, setLogs] = useState<string[]>(["초기화 프로세스 시작..."])
+  const addLog = useCallback((msg: string) => {
+    setLogs((prev) => [...prev.slice(-49), `> ${msg}`])
+  }, [])
+
+  // ── 데이터 로드 ───────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -24,18 +48,20 @@ export default function MapPage() {
         const body: BoreholeApiResponse = await res.json()
         if (!cancelled) {
           setAllBoreholes(body.boreholes)
-          setLoadErr(null)
+          addLog(`시추공 ${body.boreholes.length}개 로드 완료`)
         }
       } catch (e: any) {
-        if (!cancelled) setLoadErr(e.message || "시추공 데이터 로드 실패")
+        if (!cancelled) {
+          setLoadErr(e.message || "시추공 데이터 로드 실패")
+          addLog(`오류: ${e.message}`)
+        }
       } finally {
         if (!cancelled) setLoadingBh(false)
       }
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [addLog])
 
-  // 프로젝트 목록 로드
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -43,249 +69,312 @@ export default function MapPage() {
         const res = await fetch("/api/v1/projects?limit=1000")
         if (!res.ok) return
         const body = await res.json()
-        if (!cancelled) setProjects(body.projects || [])
+        if (!cancelled) {
+          setProjects(body.projects || [])
+          addLog("V-World 기본지도 로드 완료")
+        }
       } catch {}
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [addLog])
 
-  // 프로젝트 필터 적용
+  // ── 필터 적용 ─────────────────────────────────────────────
   const filteredBoreholes = projectFilter
     ? allBoreholes.filter((b) => b.project_id === projectFilter)
     : allBoreholes
 
-  // Cesium 맵 훅 호출
-  const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing } =
+  // ── Cesium 훅 ─────────────────────────────────────────────
+  const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing, zoomIn, zoomOut } =
     useCesiumMap(containerRef, filteredBoreholes, "Base")
 
-  // polygon 좌표 배열로부터 BBOX(minLng, minLat, maxLng, maxLat)를 실시간 산출하는 헬퍼
+  // 폴리곤 완성 시 → 전체 선택
+  useEffect(() => {
+    if (polygon) {
+      setCheckedIds(new Set(selectedBoreholes.map((b) => b.id)))
+      addLog(`영역 내 시추공 ${selectedBoreholes.length}개 감지`)
+    } else {
+      setCheckedIds(new Set())
+    }
+  }, [polygon, selectedBoreholes, addLog])
+
+  // ── BBOX 계산 ─────────────────────────────────────────────
   const calculatedBbox = useMemo<[number, number, number, number] | null>(() => {
     if (!polygon || polygon.length === 0) return null
-    let minLng = Number.POSITIVE_INFINITY
-    let minLat = Number.POSITIVE_INFINITY
-    let maxLng = Number.NEGATIVE_INFINITY
-    let maxLat = Number.NEGATIVE_INFINITY
-
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity
     polygon.forEach((pt) => {
-      if (pt.lng < minLng) minLng = pt.lng
-      if (pt.lat < minLat) minLat = pt.lat
-      if (pt.lng > maxLng) maxLng = pt.lng
-      if (pt.lat > maxLat) maxLat = pt.lat
+      const lng = Cesium.Math.toDegrees(pt.longitude)
+      const lat = Cesium.Math.toDegrees(pt.latitude)
+      if (lng < minLng) minLng = lng
+      if (lat < minLat) minLat = lat
+      if (lng > maxLng) maxLng = lng
+      if (lat > maxLat) maxLat = lat
     })
-
     return [minLng, minLat, maxLng, maxLat]
   }, [polygon])
 
-  // 2단계 3D 솔리드 뷰어(5173포트)로 BBOX 및 시추공 파라미터를 물고 도약하는 함수
-  const handleProceedToStep2 = () => {
+  // ── 2단계 이동 ────────────────────────────────────────────
+  const handleGenerate = () => {
     if (!calculatedBbox) return
     const bboxStr = calculatedBbox.map((v) => v.toFixed(6)).join(",")
-    const bhIdsStr = selectedBoreholes.map((b) => b.id).join(",")
-    const polyStr = JSON.stringify(polygon)
-
+    const bhIdsStr = [...checkedIds].join(",")
+    const polyDeg = polygon!.map((pt) => ({
+      lng: Cesium.Math.toDegrees(pt.longitude),
+      lat: Cesium.Math.toDegrees(pt.latitude),
+    }))
+    const polyStr = JSON.stringify(polyDeg)
+    addLog(`3D 뷰어로 이동 (시추공 ${checkedIds.size}개)`)
     window.location.href = `http://localhost:5173/?bbox=${bboxStr}&boreholeIds=${bhIdsStr}&polygon=${encodeURIComponent(polyStr)}`
   }
 
+  // ── 초기화 ───────────────────────────────────────────────
+  const handleClear = () => {
+    cancelDrawing()
+    setCheckedIds(new Set())
+    addLog("초기화 완료")
+  }
+
+  // ── 체크박스 토글 ─────────────────────────────────────────
+  const toggleCheck = (id: number) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+  const toggleAll = () => {
+    if (checkedIds.size === selectedBoreholes.length) {
+      setCheckedIds(new Set())
+    } else {
+      setCheckedIds(new Set(selectedBoreholes.map((b) => b.id)))
+    }
+  }
+
+  const logPanelHeight = logCollapsed ? 36 : 100
+
   return (
-    <div style={{ position: "relative", width: "100%", height: "100vh", background: "#0f172a" }}>
-      {/* Cesium 3D 뷰어 컨테이너 */}
+    <div style={{ position: "relative", width: "100%", height: "100vh", background: C.bgDark, overflow: "hidden" }}>
+      {/* Cesium 컨테이너 */}
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
 
-      {/* 좌측 사이드바 */}
-      <div
-        style={{
-          position: "absolute",
-          top: 12,
-          left: 12,
-          width: 270,
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-          zIndex: 10,
-        }}
-      >
+      {/* ── 좌측: 도구 모음 ──────────────────────────────── */}
+      <div style={{
+        position: "absolute", top: 20, left: 20, width: 200, zIndex: 1000,
+        background: C.panel, border: `1px solid ${C.border}`,
+        borderRadius: 8, backdropFilter: blur, color: C.text,
+        display: "flex", flexDirection: "column", gap: 8, padding: "12px 10px",
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, letterSpacing: "0.08em", marginBottom: 2 }}>
+          도구 모음
+        </div>
 
+        {/* 영역 그리기 */}
+        <PanelBtn
+          onClick={isDrawing ? cancelDrawing : startDrawing}
+          active={isDrawing}
+          color={isDrawing ? C.red : C.primary}
+          label={isDrawing ? "✕  그리기 취소" : "✏️  영역 그리기"}
+        />
 
-        {/* 프로젝트 필터 패널 */}
-        <div
+        {/* 지역 필터 */}
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>지역 필터</div>
+        <select
+          value={projectFilter ?? ""}
+          onChange={(e) => setProjectFilter(e.target.value === "" ? null : Number(e.target.value))}
           style={{
-            background: "rgba(15, 23, 42, 0.92)",
-            border: "1px solid rgba(255,255,255,0.12)",
-            borderRadius: 10,
-            padding: "12px 14px",
-            backdropFilter: "blur(12px)",
-            color: "#f8fafc",
+            width: "100%", padding: "6px 8px", borderRadius: 6,
+            background: "rgba(255,255,255,0.06)", border: `1px solid ${C.border}`,
+            color: C.text, fontSize: 12, cursor: "pointer",
           }}
         >
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-            📁 대상 건설 프로젝트 필터
-          </div>
-          <div
-            style={{
-              maxHeight: 180,
-              overflowY: "auto",
-              fontSize: 12,
-            }}
-          >
-            <div
-              onClick={() => setProjectFilter(null)}
-              style={{
-                padding: "5px 8px",
-                borderRadius: 6,
-                cursor: "pointer",
-                marginBottom: 2,
-                background: projectFilter === null ? "rgba(56, 189, 248, 0.25)" : "transparent",
-                fontWeight: projectFilter === null ? 600 : 400,
-              }}
-            >
-              전체 프로젝트
+          <option value="">전체 프로젝트</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+
+        {/* 초기화 */}
+        <PanelBtn onClick={handleClear} color="#64748b" label="🗑️  초기화" />
+
+        {/* 로딩 표시 */}
+        {loadingBh && (
+          <div style={{ fontSize: 10, color: C.muted, textAlign: "center" }}>시추공 로딩 중…</div>
+        )}
+        {loadErr && (
+          <div style={{ fontSize: 10, color: C.red }}>⚠ {loadErr}</div>
+        )}
+      </div>
+
+      {/* ── 우상단: 줌 컨트롤 ───────────────────────────────── */}
+      <div style={{
+        position: "absolute", top: 20,
+        right: polygon ? 348 : 20,
+        zIndex: 1000, display: "flex", flexDirection: "column", gap: 4,
+        transition: "right 0.25s ease",
+      }}>
+        {[{ label: "+", fn: zoomIn }, { label: "−", fn: zoomOut }].map(({ label, fn }) => (
+          <button key={label} onClick={fn} style={{
+            width: 40, height: 40, borderRadius: 6,
+            background: C.panel, border: `1px solid ${C.border}`,
+            color: C.text, fontSize: 18, cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            backdropFilter: blur,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {/* ── 우측: 시추공 선택 목록 ───────────────────────────── */}
+      {polygon && (
+        <div style={{
+          position: "absolute", top: 20, right: 20, width: 320,
+          maxHeight: `calc(100vh - ${logPanelHeight + 40}px)`,
+          zIndex: 2001, display: "flex", flexDirection: "column",
+          background: C.panelAlt, border: `1px solid ${C.border}`,
+          borderRadius: 8, backdropFilter: blur, color: C.text,
+          animation: "slideIn 0.25s ease-out",
+        }}>
+          {/* 헤더 */}
+          <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+              📍 시추공 선택 목록
             </div>
-            {projects.map((p) => (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 11, color: C.muted }}>
+                선택됨: <b style={{ color: C.text }}>{checkedIds.size}</b> / 총 {selectedBoreholes.length}개
+              </span>
+              <div style={{ display: "flex", gap: 4 }}>
+                <SmallBtn onClick={toggleAll} label={checkedIds.size === selectedBoreholes.length ? "☑ 전체 해제" : "☑ 전체"} />
+              </div>
+            </div>
+          </div>
+
+          {/* 목록 */}
+          <div style={{ overflowY: "auto", flex: 1, padding: "6px 0" }}>
+            {selectedBoreholes.length === 0 ? (
+              <div style={{ padding: "16px 12px", color: C.muted, fontSize: 12, textAlign: "center" }}>
+                선택된 시추공 없음
+              </div>
+            ) : selectedBoreholes.map((bh) => (
               <div
-                key={p.id}
-                onClick={() => setProjectFilter(p.id)}
+                key={bh.id}
+                onClick={() => toggleCheck(bh.id)}
                 style={{
-                  padding: "5px 8px",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  marginBottom: 2,
-                  background: projectFilter === p.id ? "rgba(56, 189, 248, 0.25)" : "transparent",
-                  fontWeight: projectFilter === p.id ? 600 : 400,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "6px 12px", cursor: "pointer", fontSize: 12,
+                  background: checkedIds.has(bh.id) ? "rgba(79,70,229,0.15)" : "transparent",
+                  borderLeft: checkedIds.has(bh.id) ? `3px solid ${C.primary}` : "3px solid transparent",
+                  transition: "background 0.15s",
                 }}
-                title={p.name}
               >
-                {p.name}
+                <div style={{
+                  width: 14, height: 14, border: `1.5px solid ${checkedIds.has(bh.id) ? C.primary : C.muted}`,
+                  borderRadius: 3, background: checkedIds.has(bh.id) ? C.primary : "transparent",
+                  flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  {checkedIds.has(bh.id) && <span style={{ color: "#fff", fontSize: 10, lineHeight: 1 }}>✓</span>}
+                </div>
+                <span style={{ fontWeight: 600, flex: 1 }}>{bh.name}</span>
+                <span style={{ color: C.muted, fontSize: 10 }}>
+                  {bh.latitude.toFixed(4)} / {bh.longitude.toFixed(4)}
+                </span>
               </div>
             ))}
           </div>
-        </div>
 
-        {/* 시추공 분석 범위 지정 */}
-        <div
-          style={{
-            background: "rgba(15, 23, 42, 0.92)",
-            border: "1px solid rgba(255,255,255,0.12)",
-            borderRadius: 10,
-            padding: "12px 14px",
-            backdropFilter: "blur(12px)",
-            color: "#f8fafc",
-          }}
-        >
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-            📐 시추공 분석 범위 지정
-          </div>
-          {isDrawing ? (
+          {/* 생성 버튼 */}
+          <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.border}` }}>
             <button
-              onClick={cancelDrawing}
+              onClick={handleGenerate}
+              disabled={checkedIds.size === 0}
               style={{
-                width: "100%",
-                padding: "8px 0",
-                borderRadius: 6,
-                border: "1px solid rgba(248,113,113,0.5)",
-                background: "rgba(248,113,113,0.15)",
-                color: "#fca5a5",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-              }}
-            >
-              <X size={14} /> 그리기 취소
-            </button>
-          ) : (
-            <button
-              onClick={startDrawing}
-              style={{
-                width: "100%",
-                padding: "8px 0",
-                borderRadius: 6,
-                border: "1px solid rgba(56,189,248,0.4)",
-                background: "rgba(56,189,248,0.1)",
-                color: "#7dd3fc",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-              }}
-            >
-              <Pen size={14} /> 영역 그리기 시작
-            </button>
-          )}
-
-          {/* 선택 영역 세부 정보 패널 */}
-          {calculatedBbox && (
-            <div
-              style={{
-                marginTop: 10,
-                padding: "8px 10px",
-                background: "rgba(16, 24, 39, 0.6)",
-                borderRadius: 6,
-                border: "1px solid rgba(255,255,255,0.06)",
-                fontSize: 11,
-                color: "#cbd5e1",
-              }}
-            >
-              <div style={{ fontWeight: 700, marginBottom: 6, color: "#fff" }}>선택 영역 좌표</div>
-              <div style={{ display: "flex", justifyContent: "space-between", margin: "2px 0" }}>
-                <span>경도 범위</span>
-                <span>{calculatedBbox[0].toFixed(4)}° ~ {calculatedBbox[2].toFixed(4)}°</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", margin: "2px 0" }}>
-                <span>위도 범위</span>
-                <span>{calculatedBbox[1].toFixed(4)}° ~ {calculatedBbox[3].toFixed(4)}°</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", margin: "4px 0 0 0", paddingTop: 4, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                <span>포함 시추공</span>
-                <span style={{ color: "#38bdf8", fontWeight: 700 }}>{selectedBoreholes.length} 개</span>
-              </div>
-            </div>
-          )}
-
-          {/* 2단계 진행 확인 버튼 */}
-          {calculatedBbox && (
-            <button
-              onClick={handleProceedToStep2}
-              style={{
-                width: "100%",
-                padding: "10px 0",
-                marginTop: 10,
-                borderRadius: 6,
-                border: "1px solid #22c55e",
-                background: "#22c55e",
-                color: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
+                width: "100%", padding: "10px 0", borderRadius: 6,
+                background: checkedIds.size > 0 ? C.primary : "#334155",
+                border: "none", color: C.text, fontSize: 13, fontWeight: 700,
+                cursor: checkedIds.size > 0 ? "pointer" : "not-allowed",
                 transition: "background 0.2s",
-                boxShadow: "0 4px 12px rgba(34, 197, 94, 0.3)",
               }}
             >
-              확인 ➡️ 2단계 진행 (3D 생성)
+              🏗️ 지층 생성 ({checkedIds.size}개 시추공)
             </button>
-          )}
+          </div>
         </div>
+      )}
+
+      {/* ── 상태 뱃지 ─────────────────────────────────────── */}
+      <div style={{
+        position: "absolute", bottom: logPanelHeight + 10, right: 20,
+        zIndex: 1000, fontSize: 11, color: C.logText,
+        background: "rgba(15,23,42,0.7)", padding: "4px 10px",
+        borderRadius: 12, backdropFilter: blur,
+      }}>
+        {loadingBh ? "시추공 데이터 로딩 중…" : `시추공 ${allBoreholes.length}개 · V-World Base`}
       </div>
 
-      {/* 로딩/에러 표시 */}
-      {loadingBh && (
-        <div style={{ position: "absolute", top: 12, right: 12, color: "#94a3b8", fontSize: 12, zIndex: 10 }}>
-          시추공 데이터 로딩 중...
+      {/* ── 하단: 시스템 로그 ────────────────────────────────── */}
+      <div style={{
+        position: "absolute", bottom: 0, left: 0, right: 0,
+        height: logPanelHeight, zIndex: 2000,
+        background: "rgba(15, 23, 42, 0.6)", backdropFilter: blur,
+        borderTop: `1px solid ${C.border}`,
+        transition: "height 0.3s cubic-bezier(0.4,0,0.2,1)",
+        display: "flex", flexDirection: "column",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 12px", height: 36, flexShrink: 0, cursor: "pointer",
+        }} onClick={() => setLogCollapsed((v) => !v)}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: C.muted }}>시스템 로그</span>
+          <span style={{ fontSize: 11, color: C.muted }}>{logCollapsed ? "▲" : "▼"}</span>
         </div>
-      )}
-      {loadErr && (
-        <div style={{ position: "absolute", top: 12, right: 12, color: "#f87171", fontSize: 12, zIndex: 10 }}>
-          ⚠ {loadErr}
-        </div>
-      )}
+        {!logCollapsed && (
+          <div style={{
+            flex: 1, overflowY: "auto", padding: "0 12px 6px",
+            fontFamily: "monospace", fontSize: 11, color: C.logText,
+          }}>
+            {logs.map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+        )}
+      </div>
+
+      <style>{`
+        @keyframes slideIn {
+          from { opacity: 0; transform: translateX(20px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        select option { background: #1e293b; color: #f8fafc; }
+      `}</style>
     </div>
+  )
+}
+
+// ── 재사용 버튼 컴포넌트 ──────────────────────────────────────
+function PanelBtn({ onClick, label, color, active }: {
+  onClick: () => void
+  label: string
+  color: string
+  active?: boolean
+}) {
+  return (
+    <button onClick={onClick} style={{
+      width: "100%", padding: "8px 10px", borderRadius: 6,
+      background: active ? `${color}33` : "rgba(255,255,255,0.06)",
+      border: `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
+      color: active ? color : "#f8fafc",
+      fontSize: 12, fontWeight: 600, cursor: "pointer",
+      textAlign: "left", transition: "background 0.15s, border-color 0.15s",
+    }}>
+      {label}
+    </button>
+  )
+}
+
+function SmallBtn({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: "3px 8px", borderRadius: 4, fontSize: 11,
+      background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.1)",
+      color: "#f8fafc", cursor: "pointer",
+    }}>
+      {label}
+    </button>
   )
 }

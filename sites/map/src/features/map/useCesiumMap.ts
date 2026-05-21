@@ -244,14 +244,16 @@ export function useCesiumMap(
         const pointEntity = viewer.entities.add({
           position: cartesian,
           point: {
-            pixelSize: 8,
+            pixelSize: 12,
             color: Cesium.Color.RED,
             outlineColor: Cesium.Color.WHITE,
             outlineWidth: 2,
-            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            heightReference: Cesium.HeightReference.NONE,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
         })
         activePointsRef.current.push(pointEntity)
+        viewer.scene.requestRender()
 
         // 마우스 무브 실시간 폴리곤 피드백 생성
         if (drawingPointsRef.current.length === 2 && !activePolygonRef.current) {
@@ -281,6 +283,7 @@ export function useCesiumMap(
               drawingPointsRef.current.pop()
             }
             drawingPointsRef.current.push(cartesian)
+            viewer.scene.requestRender()
           }
         }
       }
@@ -318,7 +321,7 @@ export function useCesiumMap(
       setPolygon(cartographics)
 
       // PIP(Point-In-Polygon) 알고리즘으로 시추공 필터링
-      const selected = boreholes.filter((bh) => {
+      const selected = boreholesRef.current.filter((bh) => {
         return isPointInPolygon(
           { x: bh.longitude, y: bh.latitude },
           cartographics.map((c) => ({

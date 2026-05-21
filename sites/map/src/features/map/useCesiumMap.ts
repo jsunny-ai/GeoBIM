@@ -216,6 +216,9 @@ export function useCesiumMap(
     setPolygon(null)
     setSelectedBoreholes([])
     drawingPointsRef.current = []
+
+    // Cesium 기본 더블클릭 줌-투 동작 제거 (그리기 완료 시 뷰 변경 방지)
+    viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
     
     // 기존 영역 엔티티 제거
     activePointsRef.current.forEach((p) => viewer.entities.remove(p))

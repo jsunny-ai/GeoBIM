@@ -96,23 +96,24 @@ export function useCesiumMap(
       if (Cesium.defined(pickedObject) && pickedObject.id) {
         const entity = pickedObject.id
         
-        // 1. 클러스터(숫자 원)를 클릭한 경우 지도를 해당 위치로 확대
+        const entityId = entity.id
+
+        // 1. 개별 시추공 포인트 클릭 — ID 우선 체크
+        if (typeof entityId === "string" && entityId.startsWith("bh-")) {
+          const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
+          if (bh && onBoreholeClickRef.current) {
+            onBoreholeClickRef.current(bh)
+          }
+          return
+        }
+
+        // 2. 클러스터(숫자 원) 클릭 — 해당 위치로 줌인
         if (entity.label && entity.label.text) {
           const position = entity.position.getValue(viewer.clock.currentTime)
           if (position) {
             const carto = Cesium.Cartographic.fromCartesian(position)
             const destination = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, 1000)
             viewer.camera.flyTo({ destination, duration: 1.0 })
-          }
-          return
-        }
-
-        // 2. 개별 시추공 포인트(Point)를 클릭한 경우
-        const entityId = entity.id
-        if (typeof entityId === "string" && entityId.startsWith("bh-")) {
-          const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
-          if (bh && onBoreholeClickRef.current) {
-            onBoreholeClickRef.current(bh)
           }
         }
       }

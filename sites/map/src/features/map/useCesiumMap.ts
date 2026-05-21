@@ -3,16 +3,6 @@ import * as Cesium from "cesium"
 import "cesium/Build/Cesium/Widgets/widgets.css"
 import type { Borehole } from "@/lib/types"
 
-// 지층 구분별 색상 매핑 — 지질 톤, moderate_rock 제거 (보통암 → 경암 통합)
-const SOIL_COLORS: Record<string, Cesium.Color> = {
-  soil:           Cesium.Color.fromCssColorString("#8B7355"), // 토사
-  weathered_rock: Cesium.Color.fromCssColorString("#C4A57B"), // 풍화암
-  soft_rock:      Cesium.Color.fromCssColorString("#6B8E5A"), // 연암
-  hard_rock:      Cesium.Color.fromCssColorString("#3D3D3D"), // 경암 (보통암 통합)
-}
-
-const DEFAULT_COLOR = Cesium.Color.GRAY
-
 // V-World API Key
 const VWORLD_KEY = import.meta.env.VITE_VWORLD_KEY || "A5DB0E26-36FA-35BE-8E1A-283E1232A2CA"
 
@@ -25,7 +15,6 @@ export function useCesiumMap(
   alpha: number = 235,
   zMode: "gl" | "absolute" = "gl",
   layerVisible: boolean[] = [true, true, true, true],
-  showColumns: boolean = true,
   onBoreholeClick?: (borehole: Borehole) => void,
 ) {
   const viewerRef = useRef<Cesium.Viewer | null>(null)
@@ -55,16 +44,6 @@ export function useCesiumMap(
       maximumLevel: 19,
     })
 
-    // V-World 위성영상 레이어 설정 (CORS 및 도메인 비인증 차단 해결을 위해 로컬 백엔드 타일 프록시 사용)
-    const vworldSatellite = new Cesium.UrlTemplateImageryProvider({
-      url: "/api/v1/tiles/vworld/Satellite/{z}/{x}/{y}",
-      credit: "V-World Satellite Map",
-      minimumLevel: 6, // V-World는 레벨 6부터 지원 — 0~5 요청 원천 차단
-      maximumLevel: 19,
-      // 불필요한 영역의 404 에러를 방지하기 위해 한반도 영역으로만 타일 요청 제한!
-      rectangle: Cesium.Rectangle.fromDegrees(124.0, 31.0, 132.0, 43.0),
-    })
-
     const viewer = new Cesium.Viewer(containerRef.current, {
       baseLayer: new Cesium.ImageryLayer(osmProvider), // 기본 지도를 OSM으로
       baseLayerPicker: false,
@@ -82,19 +61,23 @@ export function useCesiumMap(
       sceneMode: Cesium.SceneMode.SCENE2D, // 2D 평면 맵 모드로 구동 설정
     })
 
-    // 초기 한반도 영역 지도를 최상단에 추가
-    vworldLayerRef.current = viewer.imageryLayers.addImageryProvider(vworldSatellite)
+    // V-World Base 레이어 초기 추가 (basemap effect보다 먼저 실행 보장)
+    if (basemap !== "osm") {
+      const initProvider = new Cesium.UrlTemplateImageryProvider({
+        url: `/api/v1/tiles/vworld/${basemap}/{z}/{x}/{y}`,
+        credit: `V-World ${basemap} Map`,
+        minimumLevel: 6,
+        maximumLevel: 19,
+        rectangle: Cesium.Rectangle.fromDegrees(124.0, 31.0, 132.0, 43.0),
+      })
+      vworldLayerRef.current = viewer.imageryLayers.addImageryProvider(initProvider)
+    }
 
     viewerRef.current = viewer
-    
-    // 수원시 영통구 중심 좌표로 카메라 이동
+
+    // 수원시 영통구 중심 — 광역 뷰로 초기화
     viewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(127.0601, 37.2625, 4500),
-      orientation: {
-        heading: Cesium.Math.toRadians(0.0),
-        pitch: Cesium.Math.toRadians(-60.0),
-        roll: 0.0,
-      },
+      destination: Cesium.Cartesian3.fromDegrees(127.0601, 37.2625, 80000),
     })
 
     // 클릭 이벤트용 ScreenSpaceEventHandler 등록
@@ -111,11 +94,9 @@ export function useCesiumMap(
         if (entity.label && entity.label.text) {
           const position = entity.position.getValue(viewer.clock.currentTime)
           if (position) {
-            viewer.camera.flyTo({
-              destination: position,
-              duration: 1.0,
-              offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-90), 1000), // 수직으로 1000m 위에서 바라보도록 확대
-            })
+            const carto = Cesium.Cartographic.fromCartesian(position)
+            const destination = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, 1000)
+            viewer.camera.flyTo({ destination, duration: 1.0 })
           }
           return
         }
@@ -191,13 +172,6 @@ export function useCesiumMap(
 
     viewer.dataSources.add(dataSource)
 
-    const SOIL_TYPE_TO_INDEX: Record<string, number> = {
-      soil: 0,
-      weathered_rock: 1,
-      soft_rock: 2,
-      hard_rock: 3,
-    }
-
     boreholes.forEach((b) => {
       const elev = b.elevation || 0
       const groundZ = zMode === 'gl' ? 0.5 : elev * vexag + 0.5
@@ -227,42 +201,10 @@ export function useCesiumMap(
         }
       })
 
-      // 지하 3D 실린더 지층 컬럼 렌더링
-      if (showColumns && b.strata && b.strata.length > 0) {
-        b.strata.forEach((s) => {
-          const idx = SOIL_TYPE_TO_INDEX[s.soil_type] ?? 0
-          // 지층 가시성 체크
-          if (!layerVisible[idx]) return
-
-          const thickness = s.depth_bottom - s.depth_top
-          if (thickness <= 0) return
-
-          // 수직 과장이 적용된 기하학적 실린더 길이 및 고도 계산
-          const len = thickness * vexag
-          const midDepth = (s.depth_top + s.depth_bottom) / 2
-          const z = zMode === 'gl' ? -midDepth * vexag : (elev - midDepth) * vexag
-
-          const cylinderCenter = Cesium.Cartesian3.fromDegrees(b.longitude, b.latitude, z)
-          const color = SOIL_COLORS[s.soil_type] || DEFAULT_COLOR
-
-          const cylinderEntity = viewer.entities.add({
-            id: `cylinder-${b.id}-${s.id}`,
-            position: cylinderCenter,
-            cylinder: {
-              length: len,
-              topRadius: radius,
-              bottomRadius: radius,
-              material: color.withAlpha(alpha / 255),
-              heightReference: Cesium.HeightReference.NONE,
-            }
-          })
-          boreholesEntitiesRef.current.push(cylinderEntity)
-        })
-      }
     })
 
     viewer.scene.requestRender()
-  }, [boreholes, vexag, radius, alpha, zMode, layerVisible, showColumns])
+  }, [boreholes, vexag, radius, alpha, zMode, layerVisible])
 
   // 3. 영역 그리기 (다각형 드로잉 도구)
   const startDrawing = () => {

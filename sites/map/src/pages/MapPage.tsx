@@ -56,7 +56,7 @@ export default function MapPage() {
 
   // Cesium 맵 훅 호출
   const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing } =
-    useCesiumMap(containerRef, filteredBoreholes)
+    useCesiumMap(containerRef, filteredBoreholes, "Base")
 
   // polygon 좌표 배열로부터 BBOX(minLng, minLat, maxLng, maxLat)를 실시간 산출하는 헬퍼
   const calculatedBbox = useMemo<[number, number, number, number] | null>(() => {

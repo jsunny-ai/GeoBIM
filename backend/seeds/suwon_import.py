@@ -108,9 +108,37 @@ async def main() -> None:
             print("[import] dev@geobim.local 사용자 없음. dev_seed.py 먼저 실행하세요.")
             return
 
-        # 1 단계: 모든 Project 메모리 등록 및 일괄 Flush
+        # 1 단계: 중복 방지를 위한 기존 프로젝트 정화(DELETE) 및 신규 등록
         project_id_map = {}
         for pname, pdata in projects.items():
+            # 이미 동일한 이름의 프로젝트가 존재하는지 사전 조회
+            existing_proj_res = await session.execute(
+                select(Project).where(Project.name == pname, Project.deleted_at.is_(None))
+            )
+            existing_proj = existing_proj_res.scalar_one_or_none()
+            if existing_proj:
+                print(f"[import] 기존 프로젝트 '{pname}' 발견! 깨끗한 오버라이트를 위해 하위 시추공 및 지층 데이터를 초기화합니다...")
+                from sqlalchemy import text
+                # 기존 시추공 ID 목록 추출
+                bh_ids_res = await session.execute(
+                    select(Borehole.id).where(Borehole.project_id == existing_proj.id)
+                )
+                bh_ids = [row[0] for row in bh_ids_res.all()]
+                if bh_ids:
+                    # 지층 정화
+                    await session.execute(
+                        text("DELETE FROM strata WHERE borehole_id = ANY(:bh_ids)").bindparams(bh_ids=bh_ids)
+                    )
+                    # 시추공 정화
+                    await session.execute(
+                        text("DELETE FROM boreholes WHERE id = ANY(:bh_ids)").bindparams(bh_ids=bh_ids)
+                    )
+                # 프로젝트 정화
+                await session.execute(
+                    text("DELETE FROM projects WHERE id = :pid").bindparams(pid=existing_proj.id)
+                )
+                await session.flush()
+
             project = Project(
                 name=pname,
                 region="경기도 수원시",

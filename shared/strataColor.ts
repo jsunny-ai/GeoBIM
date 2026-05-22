@@ -86,6 +86,11 @@ const STRATA_SYNONYMS: Record<string, StrataGroup> = {
 export function normalizeStrataGroup(raw: string | null | undefined): StrataGroup {
   if (!raw) return "unknown"
 
+  const rawTrimmed = raw.trim().toLowerCase()
+  if (["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"].includes(rawTrimmed)) {
+    return rawTrimmed as StrataGroup
+  }
+
   const cleaned = raw
     .trim()
     .replace(/\s+/g, "")
@@ -149,9 +154,9 @@ export interface StrataLegendEntry {
 }
 
 export const STRATA_LEGEND: StrataLegendEntry[] = [
-  { group: "soil",           label: "토사 계열",    color: COLOR_SOIL,      rgb: STRATA_RGB.soil },
+  { group: "soil",           label: "토사",         color: COLOR_SOIL,      rgb: STRATA_RGB.soil },
   { group: "weathered_rock", label: "풍화암",       color: COLOR_WEATHERED, rgb: STRATA_RGB.weathered_rock },
-  { group: "soft_rock",      label: "연암 계열",    color: COLOR_SOFT,      rgb: STRATA_RGB.soft_rock },
-  { group: "hard_rock",      label: "경암 계열",    color: COLOR_HARD,      rgb: STRATA_RGB.hard_rock },
+  { group: "soft_rock",      label: "연암",         color: COLOR_SOFT,      rgb: STRATA_RGB.soft_rock },
+  { group: "hard_rock",      label: "경암",         color: COLOR_HARD,      rgb: STRATA_RGB.hard_rock },
   { group: "unknown",        label: "미분류",       color: COLOR_FALLBACK,  rgb: STRATA_RGB.unknown },
 ]

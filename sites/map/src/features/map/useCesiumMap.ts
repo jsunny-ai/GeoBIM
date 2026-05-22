@@ -31,6 +31,11 @@ export function useCesiumMap(
   const boreholesEntitiesRef = useRef<Cesium.Entity[]>([])
   const vworldLayerRef = useRef<Cesium.ImageryLayer | null>(null)
   const clusterDataSourceRef = useRef<Cesium.CustomDataSource | null>(null)
+  
+  // 편집 기능 상태
+  const editRectangleRef = useRef<Cesium.Rectangle | null>(null)
+  const activeHandlesRef = useRef<Cesium.Entity[]>([])
+  const draggingHandleRef = useRef<number | null>(null)
 
   // 클릭 핸들러 내부에서 최신 값을 읽기 위한 ref 미러 (init effect deps 제거용)
   const boreholesRef = useRef(boreholes)
@@ -219,9 +224,9 @@ export function useCesiumMap(
     setSelectedBoreholes([])
     drawingPointsRef.current = []
 
-    // Cesium 기본 더블클릭 줌-투 동작 제거 (그리기 완료 시 뷰 변경 방지)
-    viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
-    
+    // 마우스 드래그 이벤트 시 카메라 이동 방지
+    viewer.scene.screenSpaceCameraController.enableInputs = false
+
     // 기존 영역 엔티티 제거
     activePointsRef.current.forEach((p) => viewer.entities.remove(p))
     activePointsRef.current = []
@@ -230,107 +235,203 @@ export function useCesiumMap(
       activePolygonRef.current = null
     }
 
-    // 좌클릭: 점 추가
+    let startCartesian: Cesium.Cartesian3 | null = null
+    let currentRectangle: Cesium.Rectangle | null = null
+
+    // 좌클릭 누름: 사각형 시작점
     handler.setInputAction((click: any) => {
       const cartesian = viewer.scene.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid)
       if (cartesian) {
-        drawingPointsRef.current.push(cartesian)
-
-        // 클릭 위치에 시각적 포인트 추가
-        const pointEntity = viewer.entities.add({
-          position: cartesian,
-          point: {
-            pixelSize: 12,
-            color: Cesium.Color.RED,
-            outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 2,
-            heightReference: Cesium.HeightReference.NONE,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          },
-        })
-        activePointsRef.current.push(pointEntity)
-        viewer.scene.requestRender()
-
-        // 마우스 무브 실시간 폴리곤 피드백 생성
-        if (drawingPointsRef.current.length === 2 && !activePolygonRef.current) {
-          activePolygonRef.current = viewer.entities.add({
-            polygon: {
-              hierarchy: new Cesium.CallbackProperty(() => {
-                return new Cesium.PolygonHierarchy(drawingPointsRef.current)
-              }, false),
-              material: Cesium.Color.RED.withAlpha(0.2),
-              outline: true,
-              outlineColor: Cesium.Color.RED,
-              outlineWidth: 2,
-            },
-          })
-        }
+        startCartesian = cartesian
+        drawingPointsRef.current = [cartesian, cartesian]
       }
-    }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
-
-    // 마우스 무브: 드로잉 피드백
+    }, Cesium.ScreenSpaceEventType.LEFT_DOWN)
+    // 마우스 무브: 사각형 크기 조절
     handler.setInputAction((movement: any) => {
-      if (drawingPointsRef.current.length > 0) {
-        const cartesian = viewer.scene.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid)
-        if (cartesian) {
-          if (drawingPointsRef.current.length > 1) {
-            // 마지막 예비 점 교체
-            if (drawingPointsRef.current.length > activePointsRef.current.length) {
-              drawingPointsRef.current.pop()
-            }
-            drawingPointsRef.current.push(cartesian)
-            viewer.scene.requestRender()
+      if (!startCartesian) return
+      const cartesian = viewer.scene.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid)
+      if (cartesian) {
+        drawingPointsRef.current[1] = cartesian
+        const c1 = Cesium.Cartographic.fromCartesian(startCartesian)
+        const c2 = Cesium.Cartographic.fromCartesian(cartesian)
+        
+        // 면적이 0이 되지 않도록 약간의 오프셋 추가
+        if (Math.abs(c1.longitude - c2.longitude) > 1e-7 && Math.abs(c1.latitude - c2.latitude) > 1e-7) {
+          currentRectangle = Cesium.Rectangle.fromCartographicArray([c1, c2])
+
+          if (!activePolygonRef.current && currentRectangle) {
+            activePolygonRef.current = viewer.entities.add({
+              rectangle: {
+                coordinates: new Cesium.CallbackProperty(() => {
+                  return editRectangleRef.current || currentRectangle
+                }, false),
+                material: Cesium.Color.RED.withAlpha(0.2),
+                outline: true,
+                outlineColor: Cesium.Color.RED,
+                outlineWidth: 2,
+              },
+            })
           }
         }
+        
+        viewer.scene.requestRender()
       }
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE)
 
-    // 더블클릭: 그리기 완료 및 공간 쿼리(시추공 추출)
-    handler.setInputAction(() => {
-      if (drawingPointsRef.current.length < 3) return
+    // 마우스 뗌: 그리기 완료 및 공간 쿼리(시추공 추출)
+    handler.setInputAction((click: any) => {
+      if (!startCartesian) return
+      const cartesian = viewer.scene.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid)
+      if (cartesian) {
+        drawingPointsRef.current[1] = cartesian
+      }
 
-      // 더블클릭 임시 점 정리
-      if (drawingPointsRef.current.length > activePointsRef.current.length) {
-        drawingPointsRef.current.pop()
+      viewer.scene.screenSpaceCameraController.enableInputs = true
+
+      if (!currentRectangle) {
+        startCartesian = null
+        return
       }
 
       setIsDrawing(false)
       
-      // 그리기 핸들러 원복 및 시추공 클릭 쿼리로 재등록
-      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK)
-      handler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE)
-      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
+      // 상태 저장
+      editRectangleRef.current = Cesium.Rectangle.clone(currentRectangle)
+      
+      // 모서리 핸들(조절점) 4개 생성
+      if (activeHandlesRef.current.length === 0) {
+        for (let i = 0; i < 4; i++) {
+          const handle = viewer.entities.add({
+            position: new Cesium.CallbackProperty(() => {
+              const r = editRectangleRef.current
+              if (!r) return undefined
+              if (i === 0) return Cesium.Cartesian3.fromRadians(r.west, r.north)
+              if (i === 1) return Cesium.Cartesian3.fromRadians(r.east, r.north)
+              if (i === 2) return Cesium.Cartesian3.fromRadians(r.east, r.south)
+              if (i === 3) return Cesium.Cartesian3.fromRadians(r.west, r.south)
+            }, false),
+            point: {
+              pixelSize: 12,
+              color: Cesium.Color.WHITE,
+              outlineColor: Cesium.Color.RED,
+              outlineWidth: 2,
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            }
+          })
+          activeHandlesRef.current.push(handle)
+        }
+      }
 
+      // 그리기 핸들러 원복 및 편집 모드 핸들러 등록
+      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOWN)
+      handler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE)
+      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_UP)
+
+      // 편집용 공통 필터링 로직
+      const updateSelection = () => {
+        const rect = editRectangleRef.current
+        if (!rect) return
+        const nw = new Cesium.Cartographic(rect.west, rect.north)
+        const ne = new Cesium.Cartographic(rect.east, rect.north)
+        const se = new Cesium.Cartographic(rect.east, rect.south)
+        const sw = new Cesium.Cartographic(rect.west, rect.south)
+        setPolygon([nw, ne, se, sw, nw])
+
+        const minLng = Cesium.Math.toDegrees(rect.west)
+        const maxLng = Cesium.Math.toDegrees(rect.east)
+        const minLat = Cesium.Math.toDegrees(rect.south)
+        const maxLat = Cesium.Math.toDegrees(rect.north)
+
+        const selected = boreholesRef.current.filter((bh) => {
+          return bh.longitude >= minLng && bh.longitude <= maxLng &&
+                 bh.latitude >= minLat && bh.latitude <= maxLat
+        })
+        setSelectedBoreholes(selected)
+      }
+
+      updateSelection()
+      viewer.scene.requestRender()
+      
+      // ----- 편집 모드 이벤트 -----
+      // 1. 핸들 다운
+      handler.setInputAction((e: any) => {
+        const picked = viewer.scene.pick(e.position)
+        if (Cesium.defined(picked) && picked.id) {
+          const idx = activeHandlesRef.current.findIndex((h) => h.id === picked.id.id)
+          if (idx !== -1) {
+            draggingHandleRef.current = idx
+            viewer.scene.screenSpaceCameraController.enableInputs = false
+            return
+          }
+          
+          // 핸들이 아닌 시추공 클릭 시
+          const entityId = picked.id.id
+          if (entityId) {
+            const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
+            if (bh && onBoreholeClickRef.current) {
+              onBoreholeClickRef.current(bh)
+            }
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_DOWN)
+
+      // 2. 핸들 드래그
+      handler.setInputAction((movement: any) => {
+        const idx = draggingHandleRef.current
+        if (idx !== null && editRectangleRef.current) {
+          const cartesian = viewer.scene.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid)
+          if (cartesian) {
+            const carto = Cesium.Cartographic.fromCartesian(cartesian)
+            const rect = Cesium.Rectangle.clone(editRectangleRef.current)
+            
+            if (idx === 0) { // NW
+              rect.west = Math.min(carto.longitude, rect.east - 1e-7)
+              rect.north = Math.max(carto.latitude, rect.south + 1e-7)
+            } else if (idx === 1) { // NE
+              rect.east = Math.max(carto.longitude, rect.west + 1e-7)
+              rect.north = Math.max(carto.latitude, rect.south + 1e-7)
+            } else if (idx === 2) { // SE
+              rect.east = Math.max(carto.longitude, rect.west + 1e-7)
+              rect.south = Math.min(carto.latitude, rect.north - 1e-7)
+            } else if (idx === 3) { // SW
+              rect.west = Math.min(carto.longitude, rect.east - 1e-7)
+              rect.south = Math.min(carto.latitude, rect.north - 1e-7)
+            }
+            
+            editRectangleRef.current = rect
+            updateSelection()
+            viewer.scene.requestRender()
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.MOUSE_MOVE)
+
+      // 3. 핸들 드래그 종료
+      handler.setInputAction(() => {
+        if (draggingHandleRef.current !== null) {
+          draggingHandleRef.current = null
+          viewer.scene.screenSpaceCameraController.enableInputs = true
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_UP)
+
+      // 원본 LEFT_CLICK 유지 (일반 클릭용)
       handler.setInputAction((click: any) => {
-        const pickedObject = viewer.scene.pick(click.position)
-        if (Cesium.defined(pickedObject) && pickedObject.id) {
-          const entityId = pickedObject.id.id
-          const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
-          if (bh && onBoreholeClickRef.current) {
-            onBoreholeClickRef.current(bh)
+        if (draggingHandleRef.current !== null) return
+        const picked = viewer.scene.pick(click.position)
+        if (Cesium.defined(picked) && picked.id) {
+          const entityId = picked.id.id
+          if (entityId) {
+            const bh = boreholesRef.current.find((b) => `bh-${b.id}` === entityId)
+            if (bh && onBoreholeClickRef.current) {
+              onBoreholeClickRef.current(bh)
+            }
           }
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
 
-      // Cartographic으로 좌표계 변환
-      const cartographics = drawingPointsRef.current.map((c) => Cesium.Cartographic.fromCartesian(c))
-      setPolygon(cartographics)
+      startCartesian = null
+      currentRectangle = null
 
-      // PIP(Point-In-Polygon) 알고리즘으로 시추공 필터링
-      const selected = boreholesRef.current.filter((bh) => {
-        return isPointInPolygon(
-          { x: bh.longitude, y: bh.latitude },
-          cartographics.map((c) => ({
-            x: Cesium.Math.toDegrees(c.longitude),
-            y: Cesium.Math.toDegrees(c.latitude),
-          })),
-        )
-      })
-
-      setSelectedBoreholes(selected)
-      viewer.scene.requestRender()
-    }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
-
+    }, Cesium.ScreenSpaceEventType.LEFT_UP)
   }
 
   // 그리기 취소 및 초기화
@@ -351,10 +452,15 @@ export function useCesiumMap(
       activePolygonRef.current = null
     }
 
+    activeHandlesRef.current.forEach((h) => viewer.entities.remove(h))
+    activeHandlesRef.current = []
+    editRectangleRef.current = null
+    draggingHandleRef.current = null
+
     if (handler) {
-      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK)
+      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOWN)
       handler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE)
-      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
+      handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_UP)
 
       handler.setInputAction((click: any) => {
         const pickedObject = viewer.scene.pick(click.position)
@@ -368,6 +474,7 @@ export function useCesiumMap(
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
     }
 
+    viewer.scene.screenSpaceCameraController.enableInputs = true
     viewer.scene.requestRender()
   }
 

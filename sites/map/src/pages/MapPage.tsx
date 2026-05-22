@@ -3,6 +3,7 @@ import "cesium/Build/Cesium/Widgets/widgets.css"
 import * as Cesium from "cesium"
 import { useCesiumMap } from "@/features/map/useCesiumMap"
 import type { Borehole, Project, BoreholeApiResponse, Stratum } from "@/lib/types"
+import { normalizeStrataGroup, getStrataColor, STRATA_LEGEND } from "@shared/strataColor"
 
 // ── KH_Geo 색상 팔레트 ────────────────────────────────────────
 const C = {
@@ -47,7 +48,7 @@ export default function MapPage() {
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch("/api/v1/boreholes?limit=10000&include_strata=true")
+        const res = await fetch("/api/v1/boreholes/?limit=10000&include_strata=true")
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const body: BoreholeApiResponse = await res.json()
         if (!cancelled) {
@@ -65,7 +66,7 @@ export default function MapPage() {
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch("/api/v1/projects?limit=1000")
+        const res = await fetch("/api/v1/projects/?limit=1000")
         if (!res.ok) return
         const body = await res.json()
         if (!cancelled) setProjects(body.projects || [])
@@ -240,8 +241,8 @@ export default function MapPage() {
         border: `1px solid ${C.border}`,
       }}>
         {isDrawing
-          ? "지도에서 클릭으로 영역을 그리세요 · 더블클릭으로 완료"
-          : '"영역 선택" 클릭 후 지도에서 폴리곤을 그리세요'}
+          ? "지도에서 마우스를 드래그하여 사각형 영역을 그리세요"
+          : '"영역 선택" 클릭 후 지도에서 드래그하세요'}
       </div>
 
       {/* ── 하단 상태 바 ─────────────────────────────────────── */}
@@ -288,60 +289,6 @@ function InfoRow({ label, value, valueStyle }: {
       <span style={{ color: "#cbd5e1", ...valueStyle }}>{value}</span>
     </div>
   )
-}
-
-// ── 지층 색상 ────────────────────────────────────────────────────────
-const STRATA_COLOR: Record<string, string> = {
-  soil:          "#8b7355",
-  weathered_rock:"#deb887",
-  soft_rock:     "#6b8e5a",
-  normal_rock:   "#4682b4",
-  hard_rock:     "#3d3d3d",
-  unknown:       "#b4b4b4",
-}
-
-const STRATA_LABEL: Record<string, string> = {
-  soil:          "토사",
-  weathered_rock:"풍화암",
-  soft_rock:     "연암",
-  normal_rock:   "보통암",
-  hard_rock:     "경암",
-  unknown:       "미분류",
-}
-
-// 실시간 한글/영문 양방향 기반 지질학적 분류 파서
-function getStrataGroup(soilType: string, strataGroup?: string): string {
-  // 1단계: strata_group 이 이미 올바른 영문 규격인 경우
-  const grp = strataGroup || ""
-  if (["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock"].includes(grp)) {
-    return grp
-  }
-  
-  // 2단계: soil_type 자체가 영문 규격(예: 'soil', 'soft_rock')으로 저장되어 있는 경우 방어
-  const sType = (soilType || "").trim().toLowerCase()
-  if (["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock"].includes(sType)) {
-    return sType
-  }
-  
-  // 3단계: 한글 지층명 파싱 및 정규화
-  const cleaned = sType.replace(/\s+/g, "").replace(/\(.*?\)/g, "").replace(/[^가-힣]/g, "")
-  
-  if (["토사", "매립토", "매립층", "퇴적토", "퇴적층", "충적층", "붕적층", "풍화토", "잔류토", "실트", "모래", "자갈", "점토"].some(k => cleaned.includes(k))) {
-    return "soil"
-  }
-  if (["풍화암", "풍화대", "풍화기반암"].some(k => cleaned.includes(k))) {
-    return "weathered_rock"
-  }
-  if (["연암", "리핑암"].some(k => cleaned.includes(k))) {
-    return "soft_rock"
-  }
-  if (["보통암", "중암"].some(k => cleaned.includes(k))) {
-    return "normal_rock"
-  }
-  if (["경암", "발파암", "극경암"].some(k => cleaned.includes(k))) {
-    return "hard_rock"
-  }
-  return "unknown"
 }
 
 function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loading?: boolean; onClose: () => void }) {
@@ -433,8 +380,7 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
                 {sorted.map((s, i) => {
                   const thickness = s.depth_bottom - s.depth_top
                   const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
-                  const grp = getStrataGroup(s.soil_type, s.strata_group)
-                  const col = STRATA_COLOR[grp] ?? STRATA_COLOR.unknown
+                  const col = getStrataColor(s.soil_type)
                   return (
                     <div key={i} style={{
                       width: "100%", height: heightPx,
@@ -450,9 +396,9 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
                   const thickness = s.depth_bottom - s.depth_top
                   const topPx = totalDepth > 0 ? (s.depth_top / totalDepth) * LOG_H : 0
                   const heightPx = totalDepth > 0 ? (thickness / totalDepth) * LOG_H : 0
-                  const grp = getStrataGroup(s.soil_type, s.strata_group)
-                  const col = STRATA_COLOR[grp] ?? STRATA_COLOR.unknown
-                  const lbl = STRATA_LABEL[grp] ?? s.soil_type
+                  const grp = normalizeStrataGroup(s.soil_type)
+                  const col = getStrataColor(s.soil_type)
+                  const lbl = STRATA_LEGEND.find(l => l.group === grp)?.label ?? s.soil_type
                   
                   return (
                     <div key={i} style={{
@@ -481,13 +427,13 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
             <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: "4px 8px" }}>
               {sorted
                 .filter((s, i, arr) => {
-                  const key = getStrataGroup(s.soil_type, s.strata_group)
-                  return arr.findIndex((x) => getStrataGroup(x.soil_type, x.strata_group) === key) === i
+                  const key = normalizeStrataGroup(s.soil_type)
+                  return arr.findIndex((x) => normalizeStrataGroup(x.soil_type) === key) === i
                 })
                 .map((s) => {
-                  const grp = getStrataGroup(s.soil_type, s.strata_group)
-                  const col = STRATA_COLOR[grp] ?? STRATA_COLOR.unknown
-                  const lbl = STRATA_LABEL[grp] ?? s.soil_type
+                  const grp = normalizeStrataGroup(s.soil_type)
+                  const col = getStrataColor(s.soil_type)
+                  const lbl = STRATA_LEGEND.find(l => l.group === grp)?.label ?? s.soil_type
                   return (
                     <div key={grp} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
                       <span style={{ width: 10, height: 10, borderRadius: 2, background: col, display: "inline-block" }} />

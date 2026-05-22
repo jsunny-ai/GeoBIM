@@ -74,6 +74,11 @@ def normalize_strata_group(raw: str | None) -> StrataGroup:
     if not raw:
         return "unknown"
 
+    # 이미 표준 영어 지층 코드 형태로 매핑되어 온 경우, 한글 필터링 전에 즉시 반환
+    raw_lower = raw.strip().lower()
+    if raw_lower in ["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"]:
+        return raw_lower
+
     cleaned = re.sub(r"\s+", "", raw.strip())
     cleaned = re.sub(r"\(.*?\)", "", cleaned)
     cleaned = re.sub(r"[^가-힣]", "", cleaned)  # 한글만 남김

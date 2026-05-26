@@ -619,7 +619,7 @@ export function useVoxelViewer(
       for (let i = solidMeshes.length - 1; i >= 0; i--) {
         const prim = solidMeshes[i]
         // Yeongtong GLB 4개 레이어 대응 mapping
-        const visibleIdx = solidMeshes.length === 4 ? [0, 1, 2, 4][i] : i
+        const visibleIdx = solidMeshes.length === 4 ? [0, 1, 2, 3][i] : i
         if (!extraOpts.layerVisible[visibleIdx]) continue
 
         const color = SOLID_COLORS[visibleIdx] || [180, 180, 180, 200]

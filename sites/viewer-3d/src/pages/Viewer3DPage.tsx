@@ -536,31 +536,64 @@ export default function Viewer3DPage() {
           }
         }
 
-        // 3D 격자 노드 라벨링
+        // 3D 격자 노드 라벨링 (실측 깊이 수직 캡핑 + 마이너 지층 잠식 방지 역제곱 보간)
         const label = new Int8Array(NX * NX * MZ)
+        
         for (let j = 0; j < NX; j++) {
           for (let i = 0; i < NX; i++) {
             for (let l = 0; l < MZ; l++) {
               const E = yBotM + dz * l
               if (E > elevGrid[j][i]) continue // 지표 위 공기
+              
               const near = nearByCol[j * NX + i]
-              if (!near.length) { label[idx3(i, j, l)] = 5; continue; } // 미분류
+              if (!near.length) { 
+                label[idx3(i, j, l)] = 5 // 미분류
+                continue 
+              }
+              
               const votes: Record<string, number> = {}
+              
               for (const { p, w } of near) {
                 const depth = p.elev - E
-                if (depth > p.maxDepth + dz * 0.5) continue
+                const lastSeg = p.segs[p.segs.length - 1]
+                if (depth > lastSeg.to + dz * 0.5) continue
+                
                 const t = layerAtDepth(p, depth)
                 if (!t) continue
-                votes[t] = (votes[t] || 0) + w
+                
+                // 마이너 지층(연암 등) 잠식 방지:
+                // 1) 격자 해상도(dz * 0.8)를 감안한 넉넉한 수직 마진을 적용하여 1.0m 두께의 연암이 노드에서 미스나지 않고 확실하게 장악되도록 보장
+                // 2) 연암이 실제로 존재하는 시추공에 아주 압도적인 보존 가중치(50.0배, 연암 등 극소수층은 500.0배)를 인가하여 다수결에서 짓눌려 소멸(Smooth 3D 수축)하는 것을 원천 차단
+                const isActualStrata = p.segs.some((s) => s.type === t && depth >= s.from - dz * 0.8 && depth <= s.to + dz * 0.8)
+                const isMinorStrata = (t === "soft_rock")
+                const preservationWeight = isActualStrata ? (isMinorStrata ? w * 500.0 : w * 50.0) : w
+                
+                votes[t] = (votes[t] || 0) + preservationWeight
               }
+              
               let best = "UNKNOWN", bestW = 0
               for (const k in votes) {
-                if (votes[k] > bestW) { bestW = votes[k]; best = k; }
+                if (votes[k] > bestW) {
+                  bestW = votes[k]
+                  best = k
+                }
               }
-              label[idx3(i, j, l)] = LAYER_STACK.indexOf(best) + 1
+              
+              if (best === "UNKNOWN") {
+                label[idx3(i, j, l)] = 5 // 미분류
+              } else {
+                label[idx3(i, j, l)] = LAYER_STACK.indexOf(best) + 1
+              }
             }
           }
         }
+
+        // [DEBUG] 원본 격자 라벨별 개수 및 연암(code=3) 격자 분포 모니터링
+        const debugCounts: Record<number, number> = {};
+        for (let n = 0; n < label.length; n++) {
+          debugCounts[label[n]] = (debugCounts[label[n]] || 0) + 1;
+        }
+        console.log("=== [DEBUG] 3D GRID LABEL COUNTS ===", debugCounts);
 
         const nodeWorld = (i: number, j: number, l: number): [number, number, number] => [
           -boxW / 2 + (boxW * i) / (NX - 1),
@@ -590,7 +623,9 @@ export default function Viewer3DPage() {
             for (let c = 0; c <= 5; c++) {
               if (c !== code && occ[c][n] > m) m = occ[c][n]
             }
-            field[n] = fL[n] - m
+            // 원본 격자 라벨이 현재 지층(code)인 핵심 노드는 주변 지층(m)에 의한 소멸 잠식을 차단하여 3D 면 보존
+            const isOriginal = (label[n] === code)
+            field[n] = isOriginal ? Math.max(fL[n] - m * 0.15, 0.08) : fL[n] - m
             if (field[n] > 0) any = true
           }
           if (!any) continue

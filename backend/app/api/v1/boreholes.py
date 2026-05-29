@@ -302,6 +302,7 @@ class ByAreaRequest(BaseModel):
     polygon: dict  # GeoJSON Polygon
     project_id: int | None = None
     include_strata: bool = False
+    borehole_ids: list[int] | None = None
 
 
 @router.post("/by-area")
@@ -327,8 +328,29 @@ async def boreholes_by_area(
     if body.project_id is not None:
         stmt = stmt.where(Borehole.project_id == body.project_id)
 
+    if body.borehole_ids:
+        stmt = stmt.where(Borehole.id.in_(body.borehole_ids))
+
     rows = (await db.execute(stmt)).all()
-    boreholes_list = [_borehole_dict(b, loc) for b, loc in rows]
+
+    if body.include_strata:
+        ids = [b.id for b, _loc in rows]
+        if ids:
+            orm_stmt = (
+                select(Borehole)
+                .options(selectinload(Borehole.strata))
+                .where(Borehole.id.in_(ids), Borehole.deleted_at.is_(None))
+            )
+            boreholes_orm = (await db.execute(orm_stmt)).scalars().all()
+            loc_map = {b.id: loc for b, loc in rows}
+            boreholes_list = [
+                _borehole_dict(b, loc_map.get(b.id), include_strata=True)
+                for b in boreholes_orm
+            ]
+        else:
+            boreholes_list = []
+    else:
+        boreholes_list = [_borehole_dict(b, loc) for b, loc in rows]
 
     return {
         "boreholes": boreholes_list,

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import auth, boreholes, pdf_extraction, projects, templates, tiles
+from app.api.v1 import auth, boreholes, pdf_extraction, projects, templates, tiles, rbf
 from app.core.config import settings
 
 
@@ -56,3 +56,4 @@ app.include_router(
 )
 app.include_router(templates.router, prefix=f"{API_V1_PREFIX}/templates", tags=["templates"])
 app.include_router(tiles.router, prefix=f"{API_V1_PREFIX}/tiles", tags=["tiles"])
+app.include_router(rbf.router, prefix=f"{API_V1_PREFIX}/rbf", tags=["rbf"])

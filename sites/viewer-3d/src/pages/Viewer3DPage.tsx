@@ -58,9 +58,7 @@ export default function Viewer3DPage() {
   const [basemap, setBasemap] = useState<Basemap>("Base")
   const [showColumns, setShowColumns] = useState(true)
   const [showDrape, setShowDrape] = useState(true)
-  const [renderMode, setRenderMode] = useState<"smooth" | "voxel" | "rbf">("smooth")
-  const [showPhantoms, setShowPhantoms] = useState(true)
-  const [showConfidence, setShowConfidence] = useState(true)
+  const [renderMode, setRenderMode] = useState<"smooth" | "voxel">("smooth")
   const [visibility, setVisibility] = useState<Record<string, boolean>>({
     soil: true,
     weathered_rock: true,
@@ -106,11 +104,9 @@ export default function Viewer3DPage() {
     setSelectedBh,
     setStatus,
     bhPosRef,
-    showPhantoms,
-    showConfidence,
   }
 
-  const { focusBorehole } = useGeoModel(sceneRef, cameraRef, controlsRef, bhState, bbox, modelSettings)
+  const { focusBorehole } = useGeoModel(sceneRef, cameraRef, controlsRef, bhState, bbox, polygon, modelSettings)
 
   if (parseError || !polygon) {
     return (
@@ -155,10 +151,6 @@ export default function Viewer3DPage() {
           setVisibility={setVisibility}
           showColumns={showColumns}
           setShowColumns={setShowColumns}
-          showPhantoms={showPhantoms}
-          setShowPhantoms={setShowPhantoms}
-          showConfidence={showConfidence}
-          setShowConfidence={setShowConfidence}
         />
 
         <div style={hint}>

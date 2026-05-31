@@ -89,8 +89,8 @@ interface ViewerControlsProps {
   setBasemap: (map: Basemap) => void
   showDrape: boolean
   setShowDrape: React.Dispatch<React.SetStateAction<boolean>>
-  renderMode: "smooth" | "voxel" | "rbf"
-  setRenderMode: (mode: "smooth" | "voxel" | "rbf") => void
+  renderMode: "smooth" | "voxel"
+  setRenderMode: (mode: "smooth" | "voxel") => void
   verticalExag: number
   setVerticalExag: (exag: number) => void
   depthBelowMSL: number
@@ -99,10 +99,6 @@ interface ViewerControlsProps {
   setVisibility: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
   showColumns: boolean
   setShowColumns: React.Dispatch<React.SetStateAction<boolean>>
-  showPhantoms?: boolean
-  setShowPhantoms?: React.Dispatch<React.SetStateAction<boolean>>
-  showConfidence?: boolean
-  setShowConfidence?: React.Dispatch<React.SetStateAction<boolean>>
 }
 
 export const ViewerControls: React.FC<ViewerControlsProps> = ({
@@ -120,10 +116,6 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
   setVisibility,
   showColumns,
   setShowColumns,
-  showPhantoms = true,
-  setShowPhantoms,
-  showConfidence = true,
-  setShowConfidence,
 }) => {
   return (
     <div style={panelStyle}>
@@ -216,19 +208,6 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
           >
             복셀
             <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(RLE 격자)</span>
-          </button>
-          <button
-            onClick={() => setRenderMode("rbf")}
-            style={{
-              ...(renderMode === "rbf" ? segActive : segIdle),
-              lineHeight: "1.2",
-              padding: "4px 2px",
-              fontSize: 11,
-              flex: 1,
-            }}
-          >
-            연속 RBF
-            <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(SciPy)</span>
           </button>
         </div>
       </div>
@@ -351,62 +330,6 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
         />
         시추공 기둥 오버랩
       </div>
-
-      {setShowPhantoms && (
-        <div
-          onClick={() => setShowPhantoms((s) => !s)}
-          style={{
-            marginTop: 8,
-            display: "flex",
-            alignItems: "center",
-            fontSize: 12,
-            cursor: "pointer",
-            userSelect: "none",
-            opacity: showPhantoms ? 1 : 0.5,
-          }}
-        >
-          <span
-            style={{
-              width: 13,
-              height: 13,
-              borderRadius: 3,
-              marginRight: 8,
-              background: showPhantoms ? C.btnActive : C.btnIdle,
-              border: `1px solid ${C.btnIdleBd}`,
-              flexShrink: 0,
-            }}
-          />
-          가상 시추공 (Phantom) 표시
-        </div>
-      )}
-
-      {setShowConfidence && (
-        <div
-          onClick={() => setShowConfidence((s) => !s)}
-          style={{
-            marginTop: 8,
-            display: "flex",
-            alignItems: "center",
-            fontSize: 12,
-            cursor: "pointer",
-            userSelect: "none",
-            opacity: showConfidence ? 1 : 0.5,
-          }}
-        >
-          <span
-            style={{
-              width: 13,
-              height: 13,
-              borderRadius: 3,
-              marginRight: 8,
-              background: showConfidence ? C.btnActive : C.btnIdle,
-              border: `1px solid ${C.btnIdleBd}`,
-              flexShrink: 0,
-            }}
-          />
-          Convex 신뢰 영역 표시
-        </div>
-      )}
     </div>
   )
 }

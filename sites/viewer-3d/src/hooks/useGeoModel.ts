@@ -22,13 +22,11 @@ export interface GeoModelSettings {
   visibility: Record<string, boolean>
   showColumns: boolean
   showDrape: boolean
-  renderMode: "smooth" | "voxel" | "rbf"
+  renderMode: "smooth" | "voxel"
   selectedBh: number | null
   setSelectedBh: (id: number | null) => void
   setStatus: (msg: string) => void
   bhPosRef: RefObject<Record<number, { x: number; y: number; z: number }>>
-  showPhantoms?: boolean
-  showConfidence?: boolean
 }
 
 const LAYER_STACK = ["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"]
@@ -44,6 +42,7 @@ export function useGeoModel(
   controlsRef: RefObject<OrbitControls | null>,
   boreholes: Borehole[],
   bbox: number[] | null,
+  polygon: { lng: number; lat: number }[] | null,
   settings: GeoModelSettings,
 ) {
   const dimsRef = useRef({ boxW: 2, boxD: 2, lngWidthM: 1, latWidthM: 1, mScale: 1 })
@@ -56,8 +55,8 @@ export function useGeoModel(
   const stratumGroupRef = useRef<THREE.Group | null>(null)
   const drapeTextureSeqRef = useRef(0)
   const workerRef = useRef<Worker | null>(null)
-  const phantomGroupRef = useRef<THREE.Group | null>(null)
-  const confGroupRef = useRef<THREE.Group | null>(null)
+  const polygonRef = useRef(polygon)
+  polygonRef.current = polygon
 
   const {
     verticalExag,
@@ -71,8 +70,6 @@ export function useGeoModel(
     setSelectedBh,
     setStatus,
     bhPosRef,
-    showPhantoms = true,
-    showConfidence = true,
   } = settings
 
   const visibilityRef = useRef(visibility)
@@ -81,8 +78,6 @@ export function useGeoModel(
   const renderModeRef = useRef(renderMode)
   const basemapRef = useRef(basemap)
   const verticalExagRef = useRef(verticalExag)
-  const showPhantomsRef = useRef(showPhantoms)
-  const showConfidenceRef = useRef(showConfidence)
 
   visibilityRef.current = visibility
   showColumnsRef.current = showColumns
@@ -90,8 +85,6 @@ export function useGeoModel(
   renderModeRef.current = renderMode
   basemapRef.current = basemap
   verticalExagRef.current = verticalExag
-  showPhantomsRef.current = showPhantoms
-  showConfidenceRef.current = showConfidence
 
   const applyDrapeTexture = useCallback(
     (targetBasemap: GeoModelSettings["basemap"], targetBbox: number[]) => {
@@ -99,7 +92,7 @@ export function useGeoModel(
       if (!drapeMat || targetBbox.length !== 4) return
 
       const seq = ++drapeTextureSeqRef.current
-      buildAreaCanvas(targetBbox as [number, number, number, number], LAYER_SETS[targetBasemap])
+      buildAreaCanvas(targetBbox as [number, number, number, number], LAYER_SETS[targetBasemap], polygonRef.current || undefined)
         .then((drapeCanvas) => {
           if (seq !== drapeTextureSeqRef.current || drapeMatRef.current !== drapeMat) return
           const loadedTex = new THREE.CanvasTexture(drapeCanvas)
@@ -109,8 +102,10 @@ export function useGeoModel(
           loadedTex.anisotropy = 4
           loadedTex.needsUpdate = true
 
-          if (drapeMat.map) drapeMat.map.dispose()
+          if (drapeMat.map && typeof drapeMat.map.dispose === "function") drapeMat.map.dispose()
           drapeMat.color.setHex(0xffffff)
+          drapeMat.transparent = false
+          drapeMat.opacity = 1.0
           drapeMat.map = loadedTex
           drapeMat.needsUpdate = true
         })
@@ -241,14 +236,12 @@ export function useGeoModel(
       const {
         elevGrid,
         smoothMeshData,
-        rbfSurfaceMeshData,
         voxelCells,
         dz,
         MZ,
         confRadiusM,
         lngWidthM: resultLngWidthM,
         latWidthM: resultLatWidthM,
-        phantomPoints,
       } = msg
 
       const drapeGeo = buildSurfaceMesh(elevGrid, boxW, boxD, mScale)
@@ -259,45 +252,46 @@ export function useGeoModel(
         polygonOffset: true,
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
+        transparent: true,
+        opacity: 0.55,
       })
       drapeMatRef.current = drapeMat
       const drape = new THREE.Mesh(drapeGeo, drapeMat)
+      drape.position.y += 0.02
       drape.visible = showDrapeRef.current
       stratumGroup.add(drape)
       drapeRef.current = drape
 
       if (drapeMat && bbox.length === 4) {
         const drapeSeq = ++drapeTextureSeqRef.current
-        const drapeCanvasPromise = buildAreaCanvas(bbox as [number, number, number, number], LAYER_SETS[basemapRef.current])
-        drapeCanvasPromise.then((loadedTex) => {
+        const drapeCanvasPromise = buildAreaCanvas(bbox as [number, number, number, number], LAYER_SETS[basemapRef.current], polygonRef.current || undefined)
+        drapeCanvasPromise.then((drapeCanvas) => {
           if (!active || drapeSeq !== drapeTextureSeqRef.current) return
-          if (!loadedTex) return
-          if (drapeMat.map) drapeMat.map.dispose()
+          if (!drapeCanvas) return
+          
+          const loadedTex = new THREE.CanvasTexture(drapeCanvas)
+          loadedTex.colorSpace = THREE.SRGBColorSpace
+          loadedTex.wrapS = THREE.ClampToEdgeWrapping
+          loadedTex.wrapT = THREE.ClampToEdgeWrapping
+          loadedTex.anisotropy = 4
+          loadedTex.needsUpdate = true
+
+          if (drapeMat.map && typeof drapeMat.map.dispose === "function") drapeMat.map.dispose()
           drapeMat.color.setHex(0xffffff)
+          drapeMat.transparent = false
+          drapeMat.opacity = 1.0
           drapeMat.map = loadedTex
           drapeMat.needsUpdate = true
         })
       }
 
       const smoothMeshes: Record<string, THREE.Mesh> = {}
-
-      // RBF 직접 레이어 메시 (마칭큐브 우회) — rbfSurfaceMeshData가 있으면 우선 사용
-      const activeSmoothData: Record<string, any> =
-        rbfSurfaceMeshData && Object.keys(rbfSurfaceMeshData).length > 0
-          ? rbfSurfaceMeshData
-          : smoothMeshData
-
-      for (const [type, data] of Object.entries(activeSmoothData)) {
-        const { positions, normals, indices } = data as any
+      for (const [type, data] of Object.entries(smoothMeshData)) {
+        const { positions, normals } = data as any
         const geo = new THREE.BufferGeometry()
         geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3))
         geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3))
-        // rbfSurfaceMeshData는 Uint32Array 인덱스를 포함한다
-        if (indices) {
-          geo.setIndex(new THREE.BufferAttribute(indices, 1))
-        }
-        // 마칭큐브 결과에는 인덱스가 없으므로 분기 처리
-        if (!indices) geo.computeVertexNormals()
+        geo.computeVertexNormals()
         const mat = new THREE.MeshStandardMaterial({
           color: LAYER_COLOR[type] ?? LAYER_COLOR.unknown,
           roughness: 0.92,
@@ -331,7 +325,7 @@ export function useGeoModel(
           mesh.visible = activeMode && (visibilityRef.current[type] ?? true)
         }
       }
-      applyVis(smoothMeshes, renderModeRef.current === "smooth" || renderModeRef.current === "rbf")
+      applyVis(smoothMeshes, renderModeRef.current === "smooth")
       applyVis(voxelMeshes, renderModeRef.current === "voxel")
 
       const colRadius = Math.max(boxW, boxD) * 0.003
@@ -364,66 +358,6 @@ export function useGeoModel(
       stratumGroup.add(bhGroup)
       bhGroupRef.current = bhGroup
 
-      // 3D 가상 시추공 (Phantom Points) 시각화
-      const phantomGroup = new THREE.Group()
-      const phantomRadius = colRadius * 0.95
-      if (phantomPoints && Array.isArray(phantomPoints)) {
-        for (const p of phantomPoints) {
-          if (!Number.isFinite(p.longitude) || !Number.isFinite(p.latitude) || !Number.isFinite(p.elevation)) continue
-          const bx = lngToX(p.longitude)
-          const bz = latToZ(p.latitude)
-
-          for (const seg of p.strata || []) {
-            if (!Number.isFinite(seg.depth_top) || !Number.isFinite(seg.depth_bottom)) continue
-            const yTop = (p.elevation - seg.depth_top) * mScale
-            const yBot = (p.elevation - seg.depth_bottom) * mScale
-            const h = Math.max(yTop - yBot, 1e-5)
-            const geo = new THREE.CylinderGeometry(phantomRadius, phantomRadius, h, 10)
-            const layerType = seg.strata_group ?? "unknown"
-            const mat = new THREE.MeshStandardMaterial({
-              color: 0x3b82f6, // 네온 푸른색
-              roughness: 0.5,
-              transparent: true,
-              opacity: 0.45,
-            })
-            const cyl = new THREE.Mesh(geo, mat)
-            cyl.position.set(bx, (yTop + yBot) / 2, bz)
-            cyl.userData.layerType = layerType
-            phantomGroup.add(cyl)
-          }
-        }
-      }
-      phantomGroup.visible = showPhantomsRef.current && renderModeRef.current === "rbf"
-      stratumGroup.add(phantomGroup)
-      phantomGroupRef.current = phantomGroup
-
-      // Convex 신뢰도 가이드 링 (Confidence Rings) 시각화
-      const confGroup = new THREE.Group()
-      const ringRadius = confRadiusM * mScale
-      if (renderModeRef.current === "rbf") {
-        for (const b of boreholes) {
-          if (!Number.isFinite(b.longitude) || !Number.isFinite(b.latitude) || !Number.isFinite(b.elevation)) continue
-          const bx = lngToX(b.longitude)
-          const bz = latToZ(b.latitude)
-          const yBase = -depthBelowMSL * mScale
-
-          const geo = new THREE.RingGeometry(ringRadius - 0.015, ringRadius + 0.015, 32)
-          const mat = new THREE.MeshBasicMaterial({
-            color: 0x2473bd,
-            transparent: true,
-            opacity: 0.28,
-            side: THREE.DoubleSide,
-          })
-          const ring = new THREE.Mesh(geo, mat)
-          ring.rotation.x = Math.PI / 2
-          ring.position.set(bx, yBase + 0.01, bz)
-          confGroup.add(ring)
-        }
-      }
-      confGroup.visible = showConfidenceRef.current && renderModeRef.current === "rbf"
-      stratumGroup.add(confGroup)
-      confGroupRef.current = confGroup
-
       bhPosRef.current = posMap
       fitCamera()
       setStatus(
@@ -450,33 +384,22 @@ export function useGeoModel(
         mesh.visible = activeMode && (visibility[type] ?? true)
       }
     }
-    apply(smoothMeshRef.current, renderMode === "smooth" || renderMode === "rbf")
+    apply(smoothMeshRef.current, renderMode === "smooth")
     apply(voxelMeshRef.current, renderMode === "voxel")
 
-    // 시추공 기둥 개별 세그먼트에 레이어 visibility 적용
-    // bhGroup 전체 토글과 별개로, 각 cylinder의 layerType에 따라 show/hide
     const bhGroup = bhGroupRef.current
     if (bhGroup) {
+      bhGroup.visible = showColumns
       for (const child of bhGroup.children) {
-        const layerType = (child as THREE.Mesh).userData.layerType as string
-        if (layerType) {
-          child.visible = visibility[layerType] ?? true
-        }
+        child.visible = true
       }
     }
-  }, [visibility, renderMode])
 
-  useEffect(() => {
-    if (phantomGroupRef.current) {
-      phantomGroupRef.current.visible = !!showPhantoms && renderMode === "rbf"
+    const drape = drapeRef.current
+    if (drape) {
+      drape.visible = showDrape
     }
-  }, [showPhantoms, renderMode])
-
-  useEffect(() => {
-    if (confGroupRef.current) {
-      confGroupRef.current.visible = !!showConfidence && renderMode === "rbf"
-    }
-  }, [showConfidence, renderMode])
+  }, [visibility, renderMode, showColumns, showDrape])
 
   useEffect(() => {
     if (drapeRef.current) drapeRef.current.visible = showDrape

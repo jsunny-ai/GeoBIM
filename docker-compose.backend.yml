@@ -1,0 +1,69 @@
+# Local backend stack for machines without host Python/uv.
+#
+# Usage from C:\antigravity\GeoBIM\geobim-stratum:
+#   docker compose -f docker-compose.backend.yml up --build
+#
+# The upload site can keep running on the host at localhost:5174.
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: geobim
+      POSTGRES_PASSWORD: geobim_dev_only
+      POSTGRES_DB: geobim
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geobim -d geobim"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://geobim:geobim_dev_only@postgres:5432/geobim
+      DATABASE_URL_SYNC: postgresql+psycopg2://geobim:geobim_dev_only@postgres:5432/geobim
+      REDIS_URL: redis://redis:6379/0
+      CELERY_TASK_ALWAYS_EAGER: "true"
+      SECRET_KEY: change-me-in-production-min-32-chars
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_MINUTES: "60"
+      CORS_ORIGINS: http://localhost:5170,http://localhost:5171,http://localhost:5172,http://localhost:5173,http://localhost:5174
+      PDF_CONVERT_DATA_DIR: pdf_convert
+      ENVIRONMENT: development
+      DEBUG: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - pdf_convert_data:/app/pdf_convert/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  pdf_convert_data:

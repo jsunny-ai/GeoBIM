@@ -5,7 +5,7 @@
 ## 원본 경로
 
 ```
-C:\antigravity\#1_2_PDF_CSV
+backend/pdf_convert
 ```
 
 ## Phase 2 작업 절차

@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 
@@ -24,6 +26,20 @@ engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
+# ----- 동기 엔진: Celery 워커 / 백그라운드 작업용 -----
+sync_engine = create_engine(
+    settings.database_url_sync,
+    echo=settings.debug,
+    pool_pre_ping=True,
+)
+
+SyncSessionLocal = sessionmaker(
+    bind=sync_engine,
     autoflush=False,
     autocommit=False,
     expire_on_commit=False,

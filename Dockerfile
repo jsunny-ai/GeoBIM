@@ -30,16 +30,22 @@ RUN pip install --upgrade pip \
     "python-multipart>=0.0.9" \
     "sqlalchemy[asyncio]>=2.0" \
     "asyncpg>=0.29" \
+    "psycopg2-binary>=2.9" \
     "alembic>=1.13" \
     "geoalchemy2>=0.15" \
     "pydantic>=2.9" \
     "pydantic-settings>=2.5" \
+    "email-validator>=2.0" \
+    "dnspython>=2.0" \
     "python-jose[cryptography]>=3.3" \
     "passlib[bcrypt]>=1.7" \
     "celery[redis]>=5.4" \
     "redis>=5.0" \
     "pymupdf>=1.24" \
-    "httpx>=0.27"
+    "httpx>=0.27" \
+    "numpy>=1.26" \
+    "scipy>=1.12" \
+    "pyproj>=3.6"
 
 # ── 2. runtime ──────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -50,6 +56,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     libgeos-c1v5 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # wheel 설치

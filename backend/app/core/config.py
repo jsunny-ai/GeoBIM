@@ -25,6 +25,11 @@ class Settings(BaseSettings):
 
     # ----- Redis / Celery -----
     redis_url: str = "redis://localhost:6379/0"
+    celery_task_always_eager: bool = False
+
+    # ----- PDF Convert -----
+    pdf_convert_data_dir: str = "pdf_convert"
+    java_bin_path: str = ""
 
     # ----- 보안 -----
     secret_key: str = "change-me-in-production-min-32-chars"

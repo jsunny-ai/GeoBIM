@@ -8,6 +8,7 @@
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",
+    "ignoreDeprecations": "6.0",
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
@@ -21,5 +22,5 @@
     }
   },
   "include": ["src", "../../shared"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "references": []
 }

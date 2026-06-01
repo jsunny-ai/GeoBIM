@@ -1,16 +1,349 @@
-"""PDF 박스 추출 라우터 — Phase 2 에서 구현.
+"""PDF extraction API."""
 
-핵심 차별 기능: 사용자가 PDF 위에서 박스를 그려 정보 위치를 지정 → 템플릿화.
+from __future__ import annotations
 
-예정 엔드포인트:
-- POST /upload                : PDF 파일 업로드 → job 생성
-- GET  /jobs/{id}             : 추출 job 상태 조회
-- POST /jobs/{id}/auto-match  : 첫 페이지 키워드 기반 템플릿 자동 매칭
-- POST /jobs/{id}/extract     : 템플릿 적용 추출 실행 (Celery 태스크)
-- GET  /jobs/{id}/preview     : 추출 결과 미리보기
-- POST /jobs/{id}/approve     : 미리보기 승인 → DB 반영
-"""
+import re
+import shutil
+import uuid
+from pathlib import Path
 
-from fastapi import APIRouter
+import fitz
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_current_user, get_db
+from app.core.config import settings
+from app.core.database import SyncSessionLocal
+from app.models import Borehole, ExtractionJobStatus, PdfExtractionJob, Project, User
+from app.services.pdf_service import PdfService
+from app.workers.pdf_tasks import auto_extract_task
 
 router = APIRouter()
+
+_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".hwpx"}
+
+
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
+async def upload_pdf(
+    project_id: int | None = Form(default=None),
+    pdf_file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Upload a source document and enqueue automatic extraction."""
+    original_name = pdf_file.filename or "source.pdf"
+    ext = Path(original_name).suffix.lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail="PDF, DOCX, HWPX 파일만 업로드할 수 있습니다.",
+        )
+
+    upload_root = _upload_root()
+    request_id = uuid.uuid4().hex
+
+    auto_project = project_id is None
+    if project_id is None:
+        project = Project(
+            name=f"PDF 자동 감지 대기-{request_id[:8]}",
+            owner_id=current_user.id,
+            description="PDF 업로드 후 문서에서 추출한 프로젝트명으로 자동 재분류됩니다.",
+        )
+        db.add(project)
+        await db.flush()
+        project_id = project.id
+    else:
+        project = await db.get(Project, project_id)
+        if project is None or project.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+
+    target_dir = upload_root / request_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(original_name).stem).strip("._")
+    safe_stem = safe_stem or "source"
+    target_path = target_dir / f"{safe_stem}{ext}"
+
+    with target_path.open("wb") as out:
+        shutil.copyfileobj(pdf_file.file, out)
+
+    job = PdfExtractionJob(
+        project_id=project_id,
+        file_path=str(target_path),
+        status=ExtractionJobStatus.PENDING,
+        result={"auto_project": auto_project},
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    async_result = auto_extract_task.delay(job.id)
+    job.celery_task_id = async_result.id
+    await db.commit()
+
+    return {"job_id": job.id, "status": job.status.value, "auto_project": auto_project}
+
+
+@router.post("/manual/upload", status_code=status.HTTP_202_ACCEPTED)
+async def upload_manual_pdf(
+    project_id: int | None = Form(default=None),
+    pdf_file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Upload a PDF for manual box-based extraction."""
+    original_name = pdf_file.filename or "source.pdf"
+    ext = Path(original_name).suffix.lower()
+    if ext != ".pdf":
+        raise HTTPException(status_code=422, detail="직접 지정은 PDF 파일만 지원합니다.")
+
+    upload_root = _upload_root()
+    request_id = uuid.uuid4().hex
+
+    auto_project = project_id is None
+    if project_id is None:
+        project = Project(
+            name=f"PDF 직접 지정 대기-{request_id[:8]}",
+            owner_id=current_user.id,
+            description="박스 지정 결과에서 추출한 프로젝트명으로 자동 재분류됩니다.",
+        )
+        db.add(project)
+        await db.flush()
+        project_id = project.id
+    else:
+        project = await db.get(Project, project_id)
+        if project is None or project.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+
+    target_dir = upload_root / request_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(original_name).stem).strip("._")
+    safe_stem = safe_stem or "source"
+    target_path = target_dir / f"{safe_stem}.pdf"
+
+    with target_path.open("wb") as out:
+        shutil.copyfileobj(pdf_file.file, out)
+
+    try:
+        doc = fitz.open(target_path)
+        page_count = len(doc)
+        doc.close()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"PDF를 열 수 없습니다: {exc}") from exc
+
+    job = PdfExtractionJob(
+        project_id=project_id,
+        file_path=str(target_path),
+        status=ExtractionJobStatus.PENDING,
+        result={"manual": True, "auto_project": auto_project},
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    return {
+        "job_id": job.id,
+        "status": job.status.value,
+        "project_id": project_id,
+        "auto_project": auto_project,
+        "page_count": page_count,
+    }
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return extraction job status for polling."""
+    job = await db.get(PdfExtractionJob, job_id)
+    if job is None or job.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="추출 작업을 찾을 수 없습니다.")
+
+    borehole_count = 0
+    if job.status == ExtractionJobStatus.APPROVED:
+        borehole_count = (
+            await db.execute(
+                select(func.count(Borehole.id)).where(
+                    Borehole.project_id == job.project_id,
+                    Borehole.source_file == job.file_path,
+                    Borehole.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one()
+
+    return {
+        "id": job.id,
+        "project_id": job.project_id,
+        "status": job.status.value,
+        "borehole_count": borehole_count,
+        "result": job.result,
+        "error": job.error,
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+    }
+
+
+@router.get("/jobs/{job_id}/preview")
+async def preview_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return extraction result preview."""
+    job = await db.get(PdfExtractionJob, job_id)
+    if job is None or job.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="추출 작업을 찾을 수 없습니다.")
+    return {"id": job.id, "status": job.status.value, "result": job.result, "error": job.error}
+
+
+@router.get("/jobs/{job_id}/pages/{page_number}.png")
+async def render_job_page(
+    job_id: int,
+    page_number: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> Response:
+    """Render a PDF page as PNG for manual box drawing."""
+    job = await db.get(PdfExtractionJob, job_id)
+    if job is None or job.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="추출 작업을 찾을 수 없습니다.")
+    if page_number < 1:
+        raise HTTPException(status_code=422, detail="페이지 번호는 1 이상이어야 합니다.")
+
+    try:
+        doc = fitz.open(job.file_path)
+        if page_number > len(doc):
+            raise HTTPException(status_code=404, detail="페이지를 찾을 수 없습니다.")
+        page = doc[page_number - 1]
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        png = pixmap.tobytes("png")
+        doc.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"페이지 렌더링 실패: {exc}") from exc
+
+    return Response(content=png, media_type="image/png")
+
+
+@router.post("/jobs/{job_id}/extract-boxes")
+async def extract_job_boxes(
+    job_id: int,
+    payload: dict,
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """Extract rows from user-drawn boxes and move the job to review."""
+    box_definitions = payload.get("box_definitions") or {}
+    if not box_definitions.get("boxes"):
+        raise HTTPException(status_code=422, detail="추출할 박스가 없습니다.")
+
+    with SyncSessionLocal() as sync_db:
+        job = sync_db.get(PdfExtractionJob, job_id)
+        if job is None or job.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="추출 작업을 찾을 수 없습니다.")
+
+        try:
+            project_name = sync_db.execute(
+                select(Project.name).where(Project.id == job.project_id)
+            ).scalar_one()
+            service = PdfService()
+            rows = service.extract_rows_with_template(
+                job.file_path,
+                box_definitions,
+                project_name=project_name,
+            )
+            project_id, resolved_project_name = service.resolve_project(
+                db=sync_db,
+                rows=rows,
+                project_id=job.project_id,
+                project_name=project_name,
+                auto_project=bool((job.result or {}).get("auto_project")),
+                fallback_project_name=Path(job.file_path).stem,
+            )
+            summary = {
+                "borehole_count": len({str(row.get("시추공명") or "UNKNOWN") for row in rows}),
+                "stratum_count": len(rows),
+            }
+            result = {
+                "project_id": project_id,
+                "project_name": resolved_project_name,
+                "source_file": job.file_path,
+                "box_definitions": box_definitions,
+                "rows": rows,
+                **summary,
+            }
+            job.project_id = project_id
+            job.result = result
+            job.error = None
+            job.status = ExtractionJobStatus.AWAITING_REVIEW
+            sync_db.commit()
+            return {
+                "id": job.id,
+                "project_id": job.project_id,
+                "status": job.status.value,
+                "borehole_count": 0,
+                "result": result,
+                "error": None,
+                "created_at": job.created_at.isoformat(),
+                "updated_at": job.updated_at.isoformat(),
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            sync_db.rollback()
+            job = sync_db.get(PdfExtractionJob, job_id)
+            if job is not None:
+                job.status = ExtractionJobStatus.FAILED
+                job.error = str(exc)
+                sync_db.commit()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/approve")
+async def approve_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """Mark an extracted job as approved."""
+    job = await db.get(PdfExtractionJob, job_id)
+    if job is None or job.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="추출 작업을 찾을 수 없습니다.")
+    if job.status != ExtractionJobStatus.AWAITING_REVIEW:
+        raise HTTPException(status_code=409, detail="승인 가능한 상태가 아닙니다.")
+
+    rows = (job.result or {}).get("rows") if job.result else None
+    if not rows:
+        raise HTTPException(status_code=409, detail="저장할 미리보기 데이터가 없습니다.")
+
+    with SyncSessionLocal() as sync_db:
+        try:
+            created = PdfService().persist_rows(
+                db=sync_db,
+                rows=rows,
+                project_id=job.project_id,
+                source_file=job.file_path,
+            )
+            sync_db.commit()
+        except Exception as exc:
+            sync_db.rollback()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    result = dict(job.result or {})
+    result.pop("rows", None)
+    result.update(created)
+    job.result = result
+    job.status = ExtractionJobStatus.APPROVED
+    await db.commit()
+    return {"id": job.id, "status": job.status.value, "result": job.result}
+
+
+def _upload_root() -> Path:
+    configured_dir = Path(settings.pdf_convert_data_dir)
+    if not configured_dir.is_absolute():
+        configured_dir = Path(__file__).resolve().parents[3] / configured_dir
+    upload_root = configured_dir / "data" / "00_source" / "temp_uploads"
+    upload_root.mkdir(parents=True, exist_ok=True)
+    return upload_root

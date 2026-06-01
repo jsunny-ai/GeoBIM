@@ -1,15 +1,14 @@
-"""Celery 앱 정의 + PDF 처리 태스크 스텁.
-
-실행 방법 (Phase 2 이후):
-    uv run celery -A app.workers worker --loglevel=info --pool=solo
-        # Windows 에서는 --pool=solo (prefork 불가)
-"""
+"""Celery app and PDF extraction tasks."""
 
 from __future__ import annotations
 
 from celery import Celery
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.database import SyncSessionLocal
+from app.models import ExtractionJobStatus, PdfExtractionJob, Project
+from app.services.pdf_service import PdfService
 
 celery_app = Celery(
     "geobim",
@@ -18,6 +17,7 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
+    task_always_eager=settings.celery_task_always_eager,
     task_track_started=True,
     task_serializer="json",
     accept_content=["json"],
@@ -27,22 +27,74 @@ celery_app.conf.update(
 )
 
 
-@celery_app.task(name="pdf.extract_with_template")
-def extract_with_template_task(job_id: int) -> dict:
-    """박스 템플릿으로 PDF 추출.
+@celery_app.task(name="pdf.extract_with_template", bind=True, max_retries=2)
+def extract_with_template_task(self, job_id: int) -> dict:
+    """Template extraction placeholder task.
 
-    TODO(Phase 2):
-        - DB 에서 job 조회
-        - PdfService.extract_with_template 호출
-        - 결과를 job.result 에 저장하고 status 갱신
+    Automatic extraction is the first production path. This task keeps the
+    planned API surface available and stores raw template text in job.result.
     """
-    raise NotImplementedError("Phase 2 에서 구현")
+    with SyncSessionLocal() as db:
+        job = db.get(PdfExtractionJob, job_id)
+        if job is None:
+            raise ValueError(f"PdfExtractionJob not found: {job_id}")
+        if job.template is None:
+            job.status = ExtractionJobStatus.FAILED
+            job.error = "템플릿이 지정되지 않았습니다."
+            db.commit()
+            return {"ok": False, "error": job.error}
+
+        try:
+            job.status = ExtractionJobStatus.RUNNING
+            db.commit()
+            result = PdfService().extract_with_template(job.file_path, job.template.box_definitions)
+            job.result = {"fields": result}
+            job.status = ExtractionJobStatus.AWAITING_REVIEW
+            db.commit()
+            return job.result
+        except Exception as exc:
+            db.rollback()
+            job.status = ExtractionJobStatus.FAILED
+            job.error = str(exc)
+            db.commit()
+            raise self.retry(exc=exc, countdown=30)
 
 
-@celery_app.task(name="pdf.auto_extract")
-def auto_extract_task(job_id: int) -> dict:
-    """PDF_Convert 자동 파이프라인 실행.
+@celery_app.task(name="pdf.auto_extract", bind=True, max_retries=2)
+def auto_extract_task(self, job_id: int) -> dict:
+    """Run PDF_Convert automatic extraction and store rows for review."""
+    with SyncSessionLocal() as db:
+        job = db.get(PdfExtractionJob, job_id)
+        if job is None:
+            raise ValueError(f"PdfExtractionJob not found: {job_id}")
 
-    TODO(Phase 2): PdfService.auto_extract 호출.
-    """
-    raise NotImplementedError("Phase 2 에서 구현")
+        try:
+            project_name = db.execute(
+                select(Project.name).where(Project.id == job.project_id)
+            ).scalar_one()
+            job.status = ExtractionJobStatus.RUNNING
+            job.error = None
+            db.commit()
+
+            result = PdfService().preview_extraction(
+                db=db,
+                pdf_path=job.file_path,
+                project_id=job.project_id,
+                project_name=project_name,
+                auto_project=bool((job.result or {}).get("auto_project")),
+            )
+            job.project_id = result["project_id"]
+            job.result = result
+            job.status = ExtractionJobStatus.AWAITING_REVIEW
+            db.commit()
+            return result
+        except Exception as exc:
+            db.rollback()
+            job = db.get(PdfExtractionJob, job_id)
+            if job is not None:
+                job.error = str(exc)
+                job.status = ExtractionJobStatus.FAILED
+                db.commit()
+            if self.request.retries < self.max_retries:
+                raise self.retry(exc=exc, countdown=30)
+            return {"ok": False, "error": str(exc)}

@@ -23,7 +23,7 @@ const C = {
   greenBd:   "#BEBAB3",
 } as const
 
-const { bbox, polygon, projectId, error: parseError } = parseUrlParams()
+const { bbox, polygon, projectId, boreholeIds, error: parseError } = parseUrlParams()
 
 export default function SupplementPage() {
   // ── 기존 시추공 ────────────────────────────────────────────────
@@ -48,10 +48,22 @@ export default function SupplementPage() {
   useEffect(() => {
     if (!bbox) return
     setLoadState("loading")
-    fetchBoreholes(bbox, projectId)
+    fetchBoreholes(bbox, projectId, boreholeIds)
       .then((bhs) => {
         setExistingBhs(bhs)
         setLoadState("done")
+
+        // 실제 데이터에 존재하는 strata_group 수집 → 없는 경계면 자동 제외
+        const presentGroups = new Set<string>(["ground_surface"])
+        for (const bh of bhs) {
+          for (const s of bh.strata ?? []) {
+            if (s.strata_group) presentGroups.add(s.strata_group)
+          }
+        }
+        setExportOpts(prev => ({
+          ...prev,
+          layers: prev.layers.filter(l => presentGroups.has(l)),
+        }))
       })
       .catch((e) => {
         setLoadErr(String(e))
@@ -246,10 +258,16 @@ export default function SupplementPage() {
             exportState={exportState}
             exportErr={exportErr}
             onExport={handleExport}
+            availableGroups={(() => {
+              const s = new Set<string>(["ground_surface"])
+              for (const bh of [...existingBhs, ...newBhs])
+                for (const st of bh.strata ?? [])
+                  if (st.strata_group) s.add(st.strata_group)
+              return s
+            })()}
           />
         </div>
       </div>
     </div>
   )
 }
-                         

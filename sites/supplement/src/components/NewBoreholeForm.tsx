@@ -279,3 +279,4 @@ export default function NewBoreholeForm({ newBhs, onAdd, onRemove }: Props) {
       )}
     </div>
   )
+}

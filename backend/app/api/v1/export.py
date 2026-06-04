@@ -24,7 +24,7 @@ from app.services.rbf_interpolation import GeologicalRBF
 
 router = APIRouter()
 
-AVAILABLE_LAYERS = ["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock"]
+AVAILABLE_LAYERS = ["ground_surface", "soil", "weathered_rock", "soft_rock", "normal_rock"]
 
 
 class LandXMLExportRequest(BaseModel):

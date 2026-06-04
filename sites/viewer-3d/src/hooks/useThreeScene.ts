@@ -16,7 +16,7 @@ export function useThreeScene(containerRef: RefObject<HTMLDivElement | null>) {
 
     // 1) scene / renderer / camera 설정
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x0a0e1a)
+    scene.background = new THREE.Color(0xf0ece4)
     sceneRef.current = scene
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -44,11 +44,11 @@ export function useThreeScene(containerRef: RefObject<HTMLDivElement | null>) {
     scene.add(new THREE.AmbientLight(0xffffff, 0.65))
     const d1 = new THREE.DirectionalLight(0xffffff, 0.8)
     d1.position.set(3, 5, 2); scene.add(d1)
-    const d2 = new THREE.DirectionalLight(0xa0c8ff, 0.35)
+    const d2 = new THREE.DirectionalLight(0xfff8f0, 0.35)
     d2.position.set(-2, 3, -2); scene.add(d2)
 
     // 바닥 격자선 추가
-    const gridHelper = new THREE.GridHelper(6, 12, 0x3a4a6a, 0x1a2030)
+    const gridHelper = new THREE.GridHelper(6, 12, 0xc8c2b8, 0xd8d2c8)
     gridHelper.position.y = -1.6
     scene.add(gridHelper)
 

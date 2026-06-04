@@ -3,7 +3,7 @@ import json
 
 logging.basicConfig(level=logging.INFO)
 
-# === Stage 47: 4대 대분류 강제 매핑 ===
+# === Stage 47: 5대 대분류 강제 매핑 ===
 STRATA_GROUP_MAP = {
     # 토사 그룹
     "매립토": "토사",
@@ -17,13 +17,15 @@ STRATA_GROUP_MAP = {
     "리핑암": "연암",
     # 경암 그룹
     "경암":   "경암",
-    "보통암": "경암",
+    # 보통암 그룹
+    "보통암": "보통암",
+    # 경암 그룹
     "발파암": "경암",
     "화강암": "경암",
 }
 
 def apply_strata_group_mapping(rows: list) -> list:
-    """11종 세분류 지층명을 4대 대분류로 강제 치환한다. 정의되지 않은 경우 원본 유지."""
+    """세분류 지층명을 5대 대분류로 강제 치환한다. 정의되지 않은 경우 원본 유지."""
     for row in rows:
         original = row.get("지층명", "토사")
         # 기본값을 original로 설정하여 매핑 테이블에 없는 경우 유실 방지

@@ -1,26 +1,28 @@
-import React, { useCallback, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { Borehole } from "@/lib/types"
 
 const C = {
-  border: "#2a3344",
-  text: "#e8e8e8",
-  secondary: "#cbd5e1",
-  tertiary: "#8a9bb8",
-  inner: "#10141f",
-  active: "#2473bd",
-  warnOr: "#f59e0b",
-  warnRd: "#ef4444",
-  warnCr: "#b91c1c",
+  border: "#e9e4da",
+  text: "#1c1917",
+  secondary: "#44403c",
+  tertiary: "#78716c",
+  inner: "#f2ede6",
+  active: "#D4D1CB",
+  warnOr: "#d97706",
+  warnRd: "#dc2626",
+  warnCr: "#991b1b",
 } as const
 
 const tablePanelStyle: React.CSSProperties = {
   width: 320,
-  background: "rgba(15,20,32,.98)",
+  height: "100%",
+  background: "rgba(250,248,245,.99)",
   borderLeft: `1px solid ${C.border}`,
   color: C.text,
   display: "flex",
   flexDirection: "column",
   fontFamily: "'Noto Sans KR',sans-serif",
+  zIndex: 10,
 }
 
 const thStyle: React.CSSProperties = {
@@ -52,10 +54,10 @@ const LAYER_LABEL: Record<string, string> = {
 
 interface BoreholeTableProps {
   boreholes: (Borehole & { dem_elevation?: number })[]
-  selectedBh: number | null
-  setSelectedBh: (id: number | null) => void
-  focusBorehole: (id: number) => void
-  onUpdateElevation?: (bhId: number, newElev: number) => Promise<void>
+  selectedBh: string | null
+  setSelectedBh: (id: string | null) => void
+  focusBorehole: (id: string) => void
+  onUpdateElevation?: (bhId: string, newElev: number) => Promise<void>
 }
 
 export const BoreholeTable: React.FC<BoreholeTableProps> = ({
@@ -66,10 +68,24 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
   onUpdateElevation,
 }) => {
   const [filterMode, setFilterMode] = useState<"all" | "warn" | "edited">("all")
-  const [editingBhId, setEditingBhId] = useState<number | null>(null)
+  const [editingBhId, setEditingBhId] = useState<string | null>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+
+  // 3D 클릭으로 selectedBh가 바뀌면 필터를 "전체"로 전환 후 해당 행으로 스크롤
+  // ※ requestAnimationFrame은 React 재렌더링 전에 실행될 수 있어 setTimeout(50) 사용
+  useEffect(() => {
+    if (selectedBh === null || !scrollContainerRef.current) return
+    setFilterMode("all")
+    const timer = setTimeout(() => {
+      // Number·String 혼재 대응: 양측을 String으로 통일하여 비교
+      const row = scrollContainerRef.current?.querySelector(`tr[data-bhid="${selectedBh}"]`)
+      row?.scrollIntoView({ block: "center", behavior: "smooth" })
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [selectedBh])
   const [editVal, setEditVal] = useState<string>("")
   const [isSaving, setIsSaving] = useState(false)
-  const [editLogs, setEditLogs] = useState<Record<number, { original: number; modified: number; time: string }>>({})
+  const [editLogs, setEditLogs] = useState<Record<string, { original: number; modified: number; time: string }>>({})
 
   const maxDepth = useCallback((b: Borehole) => {
     if (!b.strata?.length) return 0
@@ -150,7 +166,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
       </div>
 
       {/* B. 필터링 버튼 바 */}
-      <div style={{ display: "flex", padding: "6px 10px", gap: 4, borderBottom: `1px solid ${C.border}`, background: "rgba(10,14,26,.4)" }}>
+      <div style={{ display: "flex", padding: "6px 10px", gap: 4, borderBottom: `1px solid ${C.border}`, background: "rgba(242,237,230,.6)" }}>
         {(["all", "warn", "edited"] as const).map((mode) => {
           const active = filterMode === mode
           const labels = { all: "전체", warn: "경고대상", edited: "보정이력" }
@@ -165,8 +181,8 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                 cursor: "pointer",
                 border: `1px solid ${active ? C.border : "transparent"}`,
                 borderRadius: 4,
-                background: active ? "rgba(36,115,189,.18)" : "transparent",
-                color: active ? "#fff" : C.tertiary,
+                background: active ? "rgba(160,155,148,.18)" : "transparent",
+                color: active ? "#1c1917" : C.tertiary,
                 fontWeight: active ? 600 : 400,
                 fontFamily: "'Noto Sans KR',sans-serif",
               }}
@@ -178,7 +194,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
       </div>
 
       {/* C. 테이블 뷰포트 */}
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      <div ref={scrollContainerRef} style={{ flex: 1, overflowY: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
             <tr style={{ position: "sticky", top: 0, background: C.inner, zIndex: 5 }}>
@@ -191,7 +207,8 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
           <tbody>
             {filteredBoreholes.map((b) => {
               const depth = maxDepth(b)
-              const sel = selectedBh === b.id
+              // Number(selectedBh) vs String(b.id) 혼재 대응: String으로 통일
+              const sel = selectedBh !== null && String(selectedBh) === String(b.id)
               const { dem, diff, severity } = getElevationInfo(b)
               const isEdited = editLogs[b.id] !== undefined
               
@@ -210,14 +227,15 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
               return (
                 <React.Fragment key={b.id}>
                   <tr
+                    data-bhid={b.id}
                     onClick={() => {
                       if (sel) setSelectedBh(null)
                       else focusBorehole(b.id)
                     }}
                     style={{
-                      borderBottom: "1px solid #1f2738",
+                      borderBottom: `1px solid ${C.border}`,
                       cursor: "pointer",
-                      background: sel ? "rgba(36,115,189,.15)" : "transparent",
+                      background: sel ? "rgba(160,155,148,.15)" : "transparent",
                     }}
                   >
                     <td style={{ ...tdStyle, fontWeight: sel ? 700 : 400, display: "flex", alignItems: "center" }}>
@@ -265,7 +283,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
 
                   {/* D. 인라인 표고 보정 팝오버 편집 폼 */}
                   {editingBhId === b.id && (
-                    <tr style={{ background: "rgba(10,14,26,.85)" }}>
+                    <tr style={{ background: "rgba(242,237,230,.95)" }}>
                       <td colSpan={4} style={{ padding: "10px 12px", borderBottom: `1px solid ${C.border}` }}>
                         <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11 }}>
                           <div style={{ display: "flex", justifyContent: "space-between", color: C.tertiary }}>
@@ -284,7 +302,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                               disabled={isSaving}
                               style={{
                                 flex: 1,
-                                background: "#0c0f17",
+                                background: C.inner,
                                 border: `1px solid ${C.border}`,
                                 borderRadius: 4,
                                 color: "#fff",
@@ -381,4 +399,3 @@ function uniqueLayerGroups(b: Borehole) {
   }
   return groups
 }
-

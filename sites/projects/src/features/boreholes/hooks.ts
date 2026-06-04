@@ -5,8 +5,8 @@ import type { Borehole, Stratum } from "@/lib/types"
 
 async function fetchBoreholes(projectId: number): Promise<Borehole[]> {
   try {
-    const res = await api.get<Borehole[]>(`/boreholes?project_id=${projectId}`)
-    return res.data
+    const res = await api.get<{ boreholes: Borehole[] }>(`/boreholes?project_id=${projectId}&include_strata=true`)
+    return res.data.boreholes
   } catch {
     return MOCK_BOREHOLES[projectId] ?? []
   }
@@ -40,6 +40,43 @@ export function useBorehole(id: number) {
     enabled: !!id,
   })
 }
+
+// ── 수동 시추공 생성 ──────────────────────────────────────────────
+
+interface StratumInput {
+  depth_top: number
+  depth_bottom: number
+  soil_type: string
+  raw_text?: string
+  n_value?: number
+  uscs_code?: string
+}
+
+interface CreateBoreholePayload {
+  project_id: number
+  name: string
+  latitude: number
+  longitude: number
+  elevation?: number
+  source_crs?: string
+  strata: StratumInput[]
+}
+
+export function useCreateBorehole(projectId: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (payload: CreateBoreholePayload) => {
+      const res = await api.post("/boreholes/", payload)
+      return res.data
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["boreholes", projectId] })
+      qc.invalidateQueries({ queryKey: ["projects"] })
+    },
+  })
+}
+
+// ── 시추공 수정 ──────────────────────────────────────────────────
 
 interface UpdateBoreholePayload {
   longitude?: number

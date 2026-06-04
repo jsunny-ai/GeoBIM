@@ -7,21 +7,21 @@ import { normalizeStrataGroup, getStrataColor, STRATA_LEGEND } from "@shared/str
 
 // ── KH_Geo 색상 팔레트 ────────────────────────────────────────
 const C = {
-  bg:        "#0a0e1a",
-  panel:     "rgba(15,20,32,.95)",
-  inner:     "#10141f",
-  border:    "#2a3344",
-  text:      "#e8e8e8",
-  secondary: "#cbd5e1",
-  tertiary:  "#8a9bb8",
-  btnActive: "#2473bd",
-  btnBorder: "#3084d0",
-  btnIdle:   "#1a2030",
-  btnIdleBd: "#3a4a6a",
-  accent:    "#e8503a",
-  success:   "#1f8a4c",
-  successBd: "#27a35c",
-  input:     "#1a2030",
+  bg:        "#faf8f5",
+  panel:     "rgba(250,248,245,.97)",
+  inner:     "#f2ede6",
+  border:    "#e9e4da",
+  text:      "#1c1917",
+  secondary: "#44403c",
+  tertiary:  "#78716c",
+  btnActive: "#D4D1CB",
+  btnBorder: "#BEBAB3",
+  btnIdle:   "#f2ede6",
+  btnIdleBd: "#e9e4da",
+  accent:    "#dc2626",
+  success:   "#D4D1CB",
+  successBd: "#BEBAB3",
+  input:     "#f2ede6",
 } as const
 
 const panelStyle: React.CSSProperties = {
@@ -29,16 +29,19 @@ const panelStyle: React.CSSProperties = {
   minWidth: 250, zIndex: 10,
   background: C.panel, padding: "14px 16px",
   border: `1px solid ${C.border}`, borderRadius: 10,
-  boxShadow: "0 4px 18px rgba(0,0,0,.5)",
+  boxShadow: "0 4px 18px rgba(0,0,0,.12)",
   color: C.text, fontFamily: "'Noto Sans KR', sans-serif",
 }
 
 export default function MapPage() {
   const containerRef = useRef<HTMLDivElement>(null)
+  const restoredProjectRef = useRef<string | null>(null) // 중복 API 및 무한 루프 락 체크용
+  const [currentProjectId, setCurrentProjectId] = useState<number | null>(null) // 진입 프로젝트 ID
   const [projectFilter, setProjectFilter] = useState<number | null>(null)
   const [allBoreholes, setAllBoreholes]   = useState<Borehole[]>([])
   const [projects, setProjects]           = useState<Project[]>([])
   const [status, setStatus]               = useState("초기화 중...")
+  const [dataError, setDataError]         = useState<string | null>(null)
   const [showMarkers, setShowMarkers]       = useState(true)
   const [selectedBorehole, setSelectedBorehole] = useState<Borehole | null>(null)
   const [bhLoading, setBhLoading]           = useState(false)
@@ -49,14 +52,20 @@ export default function MapPage() {
     ;(async () => {
       try {
         const res = await fetch("/api/v1/boreholes/?limit=10000&include_strata=true")
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        if (!res.ok) throw new Error(await apiErrorMessage(res, "시추공 데이터를 불러오지 못했습니다."))
         const body: BoreholeApiResponse = await res.json()
         if (!cancelled) {
           setAllBoreholes(body.boreholes)
           setStatus(`준비 완료 · 시추공 ${body.boreholes.length.toLocaleString()}개`)
+          setDataError(null)
         }
       } catch (e: any) {
-        if (!cancelled) setStatus(`오류: ${e.message}`)
+        if (!cancelled) {
+          setAllBoreholes([])
+          const message = mapApiFailureMessage(e)
+          setStatus("시추공 데이터 연결 필요")
+          setDataError(message)
+        }
       }
     })()
     return () => { cancelled = true }
@@ -70,7 +79,9 @@ export default function MapPage() {
         if (!res.ok) return
         const body = await res.json()
         if (!cancelled) setProjects(body.projects || [])
-      } catch {}
+      } catch {
+        if (!cancelled) setProjects([])
+      }
     })()
     return () => { cancelled = true }
   }, [])
@@ -93,11 +104,107 @@ export default function MapPage() {
     finally { setBhLoading(false) }
   }, [])
 
-  const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing } =
+  const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing, setSelection } =
     useCesiumMap(containerRef, showMarkers ? filteredBoreholes : [], "Base",
       15, 10, 235, "gl", [true,true,true,true],
       handleBoreholeClick
     )
+
+  // ── 프로젝트 영역 저장/복원 상태 및 효과 ───────────────────
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false)
+  const [projectName, setProjectName] = useState("")
+  const [projectDesc, setProjectDesc] = useState("")
+  const [saveLoading, setSaveLoading] = useState(false)
+
+  // URL에서 projectId 또는 project_id 파라미터가 있는 경우 자동 로드 및 영역 세팅
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search)
+    const projectIdStr = sp.get("project_id") || sp.get("projectId")
+    if (!projectIdStr || allBoreholes.length === 0) return
+    if (restoredProjectRef.current === projectIdStr) return // 이미 세팅된 경우 재세팅 차단
+    restoredProjectRef.current = projectIdStr
+
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/v1/projects/${projectIdStr}`)
+        if (!res.ok) return
+        const proj = await res.json()
+
+        // 현재 프로젝트 정보 동적 탑재
+        setCurrentProjectId(proj.id)
+        setProjectName(proj.name)
+        setProjectDesc(proj.description || "")
+
+        if (proj.bbox && typeof proj.bbox === "object") {
+          const { bbox: rectBbox, polygon: rectPoly, borehole_ids: bhIds } = proj.bbox
+          if (rectBbox && bhIds) {
+            // Cesium 인스턴스가 완전히 로드될 때까지 약간의 대기 후 setSelection 호출
+            let count = 0
+            const interval = setInterval(() => {
+              if (setSelection && count < 20) {
+                setSelection(rectBbox, rectPoly, bhIds)
+                clearInterval(interval)
+              }
+              count++
+            }, 300)
+          }
+        }
+      } catch (e) {
+        console.error("Failed to restore project from URL:", e)
+      }
+    })()
+  }, [allBoreholes, setSelection])
+
+  const handleSaveProject = async () => {
+    if (!projectName.trim()) {
+      alert("프로젝트 이름을 입력해주세요.")
+      return
+    }
+    if (!bbox) return
+
+    setSaveLoading(true)
+    try {
+      const [swLat, swLng] = bbox.sw
+      const [neLat, neLng] = bbox.ne
+      const polyDeg = polygon!.map((pt) => ({
+        lng: Cesium.Math.toDegrees(pt.longitude),
+        lat: Cesium.Math.toDegrees(pt.latitude),
+      }))
+
+      const payload = {
+        name: projectName,
+        description: projectDesc,
+        region: "선택 영역",
+        source_crs: "EPSG:4326",
+        bbox: {
+          bbox: [swLng, swLat, neLng, neLat],
+          polygon: polyDeg,
+          borehole_ids: selectedBoreholes.map((b) => b.id),
+        },
+      }
+
+      const url = currentProjectId ? `/api/v1/projects/${currentProjectId}` : "/api/v1/projects/"
+      const method = currentProjectId ? "PUT" : "POST"
+
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) {
+        throw new Error(await apiErrorMessage(res, "프로젝트를 저장하지 못했습니다."))
+      }
+
+      const savedProject = await res.json()
+      alert(`프로젝트 '${savedProject.name}'가 성공적으로 저장되었습니다!`)
+      setIsSaveModalOpen(false)
+    } catch (e: any) {
+      alert(`저장 중 오류가 발생했습니다.\n\n${mapApiFailureMessage(e)}`)
+    } finally {
+      setSaveLoading(false)
+    }
+  }
 
   // ── BBOX (도 단위) ───────────────────────────────────────
   const bbox = useMemo<{ sw: [number,number]; ne: [number,number] } | null>(() => {
@@ -208,21 +315,108 @@ export default function MapPage() {
           </div>
         )}
 
-        {/* 확인 → 2단계 */}
+        {/* 확인 → 2단계 및 영역 저장 */}
         {bbox && (
-          <button
-            onClick={handleProceed}
-            style={{
-              marginTop: 10, width: "100%", padding: 10, borderRadius: 6,
-              background: C.success, border: `1px solid ${C.successBd}`,
-              color: C.text, fontSize: 14, fontWeight: 600,
-              cursor: "pointer", fontFamily: "inherit",
-            }}
-          >
-            확인 → 2단계 진행
-          </button>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button
+              onClick={handleProceed}
+              style={{
+                flex: 1, padding: 10, borderRadius: 6,
+                background: C.success, border: `1px solid ${C.successBd}`,
+                color: C.text, fontSize: 13, fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              3D 분석 (2단계)
+            </button>
+            <button
+              onClick={() => setIsSaveModalOpen(true)}
+              style={{
+                flex: 1, padding: 10, borderRadius: 6,
+                background: C.btnActive, border: `1px solid ${C.btnBorder}`,
+                color: C.text, fontSize: 13, fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              영역 저장
+            </button>
+          </div>
         )}
       </div>
+
+      {/* 새 프로젝트 저장 모달 */}
+      {isSaveModalOpen && (
+        <div style={{
+          position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
+          background: "rgba(28,25,23,.45)", zIndex: 100,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontFamily: "'Noto Sans KR', sans-serif"
+        }}>
+          <div style={{
+            background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
+            width: 380, padding: 24, boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+            color: C.text
+          }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16, marginTop: 0 }}>
+              {currentProjectId ? "프로젝트 영역 수정" : "새 프로젝트 저장"}
+            </h3>
+            
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, color: C.tertiary, display: "block", marginBottom: 6 }}>프로젝트 이름</label>
+              <input
+                type="text"
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="예: 수원시 영통구 지반 조사"
+                style={{
+                  width: "100%", padding: "8px 12px", borderRadius: 6,
+                  background: C.input, border: `1px solid ${C.border}`,
+                  color: C.text, fontSize: 13, outline: "none", boxSizing: "border-box"
+                }}
+              />
+            </div>
+            
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 12, color: C.tertiary, display: "block", marginBottom: 6 }}>프로젝트 설명</label>
+              <textarea
+                value={projectDesc}
+                onChange={(e) => setProjectDesc(e.target.value)}
+                placeholder="상세 정보를 입력하세요..."
+                style={{
+                  width: "100%", padding: "8px 12px", borderRadius: 6,
+                  background: C.input, border: `1px solid ${C.border}`,
+                  color: C.text, fontSize: 13, outline: "none",
+                  height: 80, resize: "none", boxSizing: "border-box", fontFamily: "inherit"
+                }}
+              />
+            </div>
+            
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setIsSaveModalOpen(false)}
+                style={{
+                  padding: "8px 16px", borderRadius: 6,
+                  background: "transparent", border: `1px solid ${C.border}`,
+                  color: C.secondary, fontSize: 13, cursor: "pointer"
+                }}
+              >
+                취소
+              </button>
+              <button
+                onClick={handleSaveProject}
+                disabled={saveLoading}
+                style={{
+                  padding: "8px 16px", borderRadius: 6,
+                  background: C.success, border: `1px solid ${C.successBd}`,
+                  color: "#1c1917", fontSize: 13, fontWeight: 600, cursor: "pointer"
+                }}
+              >
+                {saveLoading ? "저장 중..." : "저장"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── 시추공 정보 패널 ─────────────────────────────────── */}
       {selectedBorehole && (
@@ -234,9 +428,26 @@ export default function MapPage() {
       )}
 
       {/* ── 우상단 힌트 ─────────────────────────────────────── */}
+      {dataError && (
+        <div style={{
+          position: "absolute", left: 14, bottom: 52, zIndex: 10,
+          maxWidth: 420, background: "rgba(254,242,242,.96)",
+          border: "1px solid #fecaca", borderRadius: 8,
+          padding: "12px 14px", color: "#7f1d1d",
+          fontSize: 12, lineHeight: 1.55,
+          boxShadow: "0 4px 18px rgba(0,0,0,.10)",
+          fontFamily: "'Noto Sans KR', sans-serif",
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            시추공 데이터를 표시할 수 없습니다
+          </div>
+          <div style={{ whiteSpace: "pre-line" }}>{dataError}</div>
+        </div>
+      )}
+
       <div style={{
         position: "absolute", top: 14, right: 14, zIndex: 10,
-        background: "rgba(15,20,32,.85)", padding: "9px 12px",
+        background: "rgba(250,248,245,.88)", padding: "9px 12px",
         borderRadius: 6, fontSize: 11, color: C.tertiary,
         border: `1px solid ${C.border}`,
       }}>
@@ -248,19 +459,67 @@ export default function MapPage() {
       {/* ── 하단 상태 바 ─────────────────────────────────────── */}
       <div style={{
         position: "absolute", bottom: 14, left: 14, zIndex: 10,
-        background: "rgba(15,20,32,.92)", padding: "8px 13px",
+        background: "rgba(250,248,245,.93)", padding: "8px 13px",
         borderRadius: 7, fontSize: 11, color: C.secondary,
         border: `1px solid ${C.border}`,
       }}>
         {status}
       </div>
 
-      <style>{`select option { background: #1a2030; color: #e8e8e8; }`}</style>
+      <style>{`select option { background: #f2ede6; color: #1c1917; }`}</style>
     </div>
   )
 }
 
 // ── 재사용 컴포넌트 ───────────────────────────────────────────
+async function apiErrorMessage(response: Response, fallback: string) {
+  let detail = ""
+  try {
+    const body = await response.json()
+    detail = body.detail ? String(body.detail) : ""
+  } catch {
+    try {
+      detail = await response.text()
+    } catch {
+      detail = ""
+    }
+  }
+  if (detail) return detail
+  if (response.status >= 500) {
+    return `${fallback} 백엔드 내부 오류가 발생했습니다.`
+  }
+  return `${fallback} 요청이 실패했습니다.`
+}
+
+function mapApiFailureMessage(error: unknown) {
+  const raw = error instanceof Error ? error.message : String(error ?? "")
+  if (
+    raw.includes("Connect call failed") ||
+    raw.includes("connection refused") ||
+    raw.includes("ECONNREFUSED") ||
+    raw.includes("127.0.0.1', 5432") ||
+    raw.includes("127.0.0.1:5432") ||
+    raw.includes("백엔드 내부 오류")
+  ) {
+    return [
+      "현재 백엔드가 PostgreSQL 데이터베이스에 연결하지 못하고 있습니다.",
+      "",
+      "해결 방법:",
+      "1. Docker Desktop 또는 Rancher Desktop을 실행합니다.",
+      "2. 프로젝트 루트에서 `docker compose up -d`를 실행합니다.",
+      "3. 백엔드가 다시 정상화되면 지도뷰를 새로고침합니다.",
+      "",
+      "지도에는 실제 DB 시추공 데이터만 표시합니다.",
+    ].join("\n")
+  }
+  return [
+    "실제 시추공 API 호출이 실패했습니다.",
+    raw ? `원인: ${raw}` : "",
+    "",
+    "백엔드와 데이터베이스가 실행 중인지 확인한 뒤 지도뷰를 새로고침해 주세요.",
+  ].filter(Boolean).join("\n")
+}
+
 function Btn({ label, active, onClick, style }: {
   label: string; active?: boolean; onClick: () => void; style?: React.CSSProperties
 }) {
@@ -269,9 +528,9 @@ function Btn({ label, active, onClick, style }: {
       width: "100%", padding: "8px 10px", borderRadius: 6,
       fontSize: 13, cursor: "pointer", transition: "all .15s",
       fontFamily: "'Noto Sans KR', sans-serif",
-      background: active ? "#2473bd" : "#1a2030",
-      color: active ? "#fff" : "#cbd5e1",
-      border: `1px solid ${active ? "#3084d0" : "#3a4a6a"}`,
+      background: active ? "#D4D1CB" : "#f2ede6",
+      color: "#1c1917",
+      border: `1px solid ${active ? "#BEBAB3" : "#e9e4da"}`,
       fontWeight: active ? 600 : 400,
       ...style,
     }}>
@@ -285,8 +544,8 @@ function InfoRow({ label, value, valueStyle }: {
 }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 12 }}>
-      <span style={{ color: "#8a9bb8" }}>{label}</span>
-      <span style={{ color: "#cbd5e1", ...valueStyle }}>{value}</span>
+      <span style={{ color: "#78716c" }}>{label}</span>
+      <span style={{ color: "#44403c", ...valueStyle }}>{value}</span>
     </div>
   )
 }
@@ -299,8 +558,8 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
   return (
     <div style={{
       position: "absolute", bottom: 14, right: 14, width: 260, zIndex: 20,
-      background: "rgba(15,20,32,.97)", border: `1px solid ${C.border}`,
-      borderRadius: 10, boxShadow: "0 4px 20px rgba(0,0,0,.6)",
+      background: "rgba(250,248,245,.97)", border: `1px solid ${C.border}`,
+      borderRadius: 10, boxShadow: "0 4px 20px rgba(0,0,0,.12)",
       color: C.text, fontFamily: "'Noto Sans KR',-apple-system,sans-serif",
       overflow: "hidden",
     }}>
@@ -308,7 +567,7 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: "10px 14px", borderBottom: `1px solid ${C.border}`,
-        background: "rgba(36,115,189,.15)",
+        background: "rgba(160,155,148,.15)",
       }}>
         <div>
           <div style={{ fontSize: 14, fontWeight: 700 }}>{borehole.name}</div>

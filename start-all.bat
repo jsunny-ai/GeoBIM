@@ -1,16 +1,17 @@
 @echo off
 set ROOT=%~dp0
 
-echo GeoBIM Stratum - starting backend + 4 sites...
+echo GeoBIM Stratum - starting backend + 5 sites...
 echo.
 
 start "GeoBIM backend :8000" cmd /k "cd /d "%ROOT%backend" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
-start "GeoBIM auth :5170"     cmd /k "cd /d "%ROOT%sites\auth"     && npm run dev"
-start "GeoBIM projects :5171" cmd /k "cd /d "%ROOT%sites\projects" && npm run dev"
-start "GeoBIM map :5172"      cmd /k "cd /d "%ROOT%sites\map"      && npm run dev"
-start "GeoBIM 3D viewer :5173" cmd /k "cd /d "%ROOT%sites\viewer-3d" && npm run dev"
-start "GeoBIM upload :5174"   cmd /k "cd /d "%ROOT%sites\upload"   && npm run dev"
+start "GeoBIM auth :5170"        cmd /k "cd /d "%ROOT%sites\auth"        && npm run dev"
+start "GeoBIM projects :5171"    cmd /k "cd /d "%ROOT%sites\projects"    && npm run dev"
+start "GeoBIM map :5172"         cmd /k "cd /d "%ROOT%sites\map"         && npm run dev"
+start "GeoBIM 3D viewer :5173"   cmd /k "cd /d "%ROOT%sites\viewer-3d"  && npm run dev"
+start "GeoBIM upload :5174"      cmd /k "cd /d "%ROOT%sites\upload"      && npm run dev"
+start "GeoBIM supplement :5175"  cmd /k "cd /d "%ROOT%sites\supplement"  && npm run dev"
 
 echo Waiting 8 seconds for servers to start...
 timeout /t 8 /nobreak > nul
@@ -20,6 +21,7 @@ start "" "http://localhost:5171"
 start "" "http://localhost:5172"
 start "" "http://localhost:5173"
 start "" "http://localhost:5174"
+start "" "http://localhost:5175"
 
 echo Done.
 pause

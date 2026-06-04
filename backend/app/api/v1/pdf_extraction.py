@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 import fitz
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,48 @@ from app.workers.pdf_tasks import auto_extract_task
 
 router = APIRouter()
 
+def _run_extraction_background(job_id: int) -> None:
+    """BackgroundTasks용 동기 PDF 추출 실행기.
+    
+    Redis/Celery 없이 로컬 개발 환경에서 사용합니다.
+    FastAPI BackgroundTasks가 별도 스레드에서 호출하므로 HTTP 응답을 블록하지 않습니다.
+    """
+    with SyncSessionLocal() as db:
+        job = db.get(PdfExtractionJob, job_id)
+        if job is None:
+            return
+        try:
+            project_name = db.execute(
+                select(Project.name).where(Project.id == job.project_id)
+            ).scalar_one()
+            job.status = ExtractionJobStatus.RUNNING
+            job.error = None
+            db.commit()
+
+            result = PdfService().preview_extraction(
+                db=db,
+                pdf_path=job.file_path,
+                project_id=job.project_id,
+                project_name=project_name,
+                auto_project=bool((job.result or {}).get("auto_project")),
+            )
+            job.project_id = result["project_id"]
+            job.result = result
+            job.status = ExtractionJobStatus.AWAITING_REVIEW
+            db.commit()
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            with SyncSessionLocal() as db2:
+                job2 = db2.get(PdfExtractionJob, job_id)
+                if job2 is not None:
+                    job2.error = str(exc)
+                    job2.status = ExtractionJobStatus.FAILED
+                    db2.commit()
+
+
 _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".hwpx"}
 
 
@@ -28,6 +70,8 @@ _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".hwpx"}
 async def upload_pdf(
     project_id: int | None = Form(default=None),
     pdf_file: UploadFile = File(...),
+    is_supplementary: bool = Form(default=False),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
@@ -72,16 +116,26 @@ async def upload_pdf(
         file_path=str(target_path),
         status=ExtractionJobStatus.PENDING,
         result={"auto_project": auto_project},
+        is_supplementary=is_supplementary,
     )
     db.add(job)
     await db.commit()
     await db.refresh(job)
 
-    async_result = auto_extract_task.delay(job.id)
-    job.celery_task_id = async_result.id
-    await db.commit()
+    if settings.celery_task_always_eager:
+        # Dev 모드: Redis 없이 백그라운드 스레드에서 즉시 실행 (응답 블록 없음)
+        background_tasks.add_task(_run_extraction_background, job.id)
+    else:
+        # Prod 모드: Celery 큐에 위임
+        try:
+            async_result = auto_extract_task.delay(job.id)
+            job.celery_task_id = async_result.id
+            await db.commit()
+        except Exception:
+            # Celery 브로커 연결 실패 시 백그라운드 폴백
+            background_tasks.add_task(_run_extraction_background, job.id)
 
-    return {"job_id": job.id, "status": job.status.value, "auto_project": auto_project}
+    return {"job_id": job.id, "status": "pending", "auto_project": auto_project}
 
 
 @router.post("/manual/upload", status_code=status.HTTP_202_ACCEPTED)
@@ -271,6 +325,7 @@ async def extract_job_boxes(
                 "project_name": resolved_project_name,
                 "source_file": job.file_path,
                 "box_definitions": box_definitions,
+                "odl": service.last_odl_metadata,
                 "rows": rows,
                 **summary,
             }
@@ -325,6 +380,7 @@ async def approve_job(
                 rows=rows,
                 project_id=job.project_id,
                 source_file=job.file_path,
+                is_supplementary=job.is_supplementary,
             )
             sync_db.commit()
         except Exception as exc:

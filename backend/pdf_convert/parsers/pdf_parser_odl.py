@@ -27,15 +27,16 @@ def normalize_strata_name(text: str) -> str:
     for color in colors: text = text.replace(color, '')
     suffixes = ['층색', '층', '표']
     for s in suffixes: text = text.replace(s, '')
+    compact_text = re.sub(r'\s+', '', text)
 
     # ── 1순위: 정확한 키워드 매칭 ──────────────────────────────────────────
     keywords = ['매립토', '퇴적토', '풍화토', '풍화암', '연암', '보통암', '경암',
                 '발파암', '리핑암', '화강암', '토사']
     for kw in keywords:
-        if kw in text: return kw
+        if kw in compact_text: return kw
 
     # ── 2순위: 미지 지층명 자동 분류 휴리스틱 ─────────────────────────────
-    text = re.sub(r'[^\w\s]', '', text).strip()
+    text = re.sub(r'[^\w\s]', '', compact_text).strip()
     if not text:
         return '토사'
 

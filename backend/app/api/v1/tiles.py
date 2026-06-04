@@ -10,10 +10,18 @@ GET /api/v1/tiles/terrain/{z}/{x}/{y}
 import httpx
 from fastapi import APIRouter, HTTPException, Path
 from fastapi.responses import Response
+from pathlib import Path as FilePath
 
 from app.core.config import settings
 
 router = APIRouter()
+
+# 글로벌 HTTP 클라이언트 (커넥션 풀 유지로 성능 최적화)
+http_client = httpx.AsyncClient(timeout=30.0)
+
+# 로컬 디스크 캐시 경로 설정
+CACHE_DIR = FilePath("data/tile_cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 _VWORLD_LAYERS = frozenset({"Satellite", "Hybrid", "Base", "gray", "midnight"})
 _TILE_EXT: dict[str, str] = {
@@ -47,17 +55,36 @@ async def vworld_tile(
     if not api_key:
         raise HTTPException(status_code=500, detail="VWORLD_API_KEY 가 설정되지 않았습니다.")
 
-    base = getattr(settings, "vworld_api_base", "https://api.vworld.kr")
     ext = _TILE_EXT[layer]
+    content_type = "image/jpeg" if layer == "Satellite" else "image/png"
+
+    # 1. 로컬 디스크 캐시 확인
+    cache_path = CACHE_DIR / "vworld" / layer / str(z) / str(x) / f"{y}.{ext}"
+    if cache_path.exists():
+        try:
+            content = cache_path.read_bytes()
+            if len(content) > 0:
+                return Response(
+                    content=content,
+                    media_type=content_type,
+                    headers={
+                        "Cache-Control": "public, max-age=86400, s-maxage=3600, stale-while-revalidate=604800",
+                        "X-Tile-Source": "V-World-Cache",
+                    },
+                )
+        except Exception:
+            pass
+
+    # 2. 캐시가 없을 시 원격 V-World 서버에 요청
+    base = getattr(settings, "vworld_api_base", "https://api.vworld.kr")
     url = f"{base}/req/wmts/1.0.0/{api_key}/{layer}/{z}/{y}/{x}.{ext}"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.get(url, headers={"User-Agent": "GeoBIM-Stratum/0.1"})
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="V-World 응답 시간 초과")
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"V-World 요청 오류: {e}")
+    try:
+        r = await http_client.get(url, headers={"User-Agent": "GeoBIM-Stratum/0.1"})
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="V-World 응답 시간 초과")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"V-World 요청 오류: {e}")
 
     if not r.is_success:
         raise HTTPException(
@@ -65,16 +92,22 @@ async def vworld_tile(
             detail=f"V-World upstream HTTP {r.status_code}",
         )
 
-    content_type = r.headers.get("content-type", "image/png")
+    response_content_type = r.headers.get("content-type", "image/png")
 
-    # V-World가 줌 레벨 0~5 등에서 200 OK와 함께 XML 에러 문서를 반환하는 경우 차단
-    # (브라우저가 이미지로 디코딩하다 InvalidStateError 발생 방지)
-    if "xml" in content_type.lower() or r.content[:5] == b"<?xml":
+    # V-World가 XML 에러 문서를 반환하는 경우 차단
+    if "xml" in response_content_type.lower() or r.content[:5] == b"<?xml":
         raise HTTPException(status_code=404, detail="Tile not available (V-World returned XML error)")
+
+    # 3. 수신 완료 시 로컬 디스크에 캐시 기록
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    except Exception:
+        pass
 
     return Response(
         content=r.content,
-        media_type=content_type,
+        media_type=response_content_type,
         headers={
             "Cache-Control": "public, max-age=86400, s-maxage=3600, stale-while-revalidate=604800",
             "X-Tile-Source": "V-World",
@@ -93,21 +126,46 @@ async def terrain_tile(
     표고(m) = R*256 + G + B/256 - 32768
     zoom 0~14, 해상도 256px 타일.
     """
+    # 1. 로컬 디스크 캐시 확인
+    cache_path = CACHE_DIR / "terrain" / str(z) / str(x) / f"{y}.png"
+    if cache_path.exists():
+        try:
+            content = cache_path.read_bytes()
+            if len(content) > 0:
+                return Response(
+                    content=content,
+                    media_type="image/png",
+                    headers={
+                        "Cache-Control": "public, max-age=604800",
+                        "X-Tile-Source": "AWS-Terrain-Cache",
+                        "Access-Control-Allow-Origin": "*",
+                    },
+                )
+        except Exception:
+            pass
+
+    # 2. 캐시가 없을 시 원격 AWS S3에 요청
     url = f"{_TERRAIN_BASE}/{z}/{x}/{y}.png"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.get(url, headers={"User-Agent": "GeoBIM-Stratum/0.1"})
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="지형 타일 응답 시간 초과")
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"지형 타일 요청 오류: {e}")
+    try:
+        r = await http_client.get(url, headers={"User-Agent": "GeoBIM-Stratum/0.1"})
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="지형 타일 응답 시간 초과")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"지형 타일 요청 오류: {e}")
 
     if not r.is_success:
         raise HTTPException(
             status_code=502,
             detail=f"Terrain upstream HTTP {r.status_code}",
         )
+
+    # 3. 수신 완료 시 로컬 디스크에 캐시 기록
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    except Exception:
+        pass
 
     return Response(
         content=r.content,

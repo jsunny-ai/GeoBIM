@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react"
-import { AlertTriangle, CheckCircle2, FileUp, Loader2, Save, Trash2, UploadCloud } from "lucide-react"
+import { AlertTriangle, CheckCircle2, FileUp, Loader2, MapPin, Save, Trash2, UploadCloud } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000"
+const API_BASE = import.meta.env.VITE_API_URL ?? ""
 
 type Project = {
   id: number
@@ -50,9 +50,23 @@ type ManualUpload = {
 type ManualBox = {
   id: string
   label: ManualLabel
+  template: ManualTemplate
   page: number
   rect: [number, number, number, number]
 }
+
+type ManualTemplate = "first" | "continuation"
+type PageMode = "same" | "split"
+
+const MANUAL_TEMPLATES: { value: ManualTemplate; label: string }[] = [
+  { value: "first", label: "첫 페이지 형식" },
+  { value: "continuation", label: "연속 페이지 형식" },
+]
+
+const PAGE_MODES: { value: PageMode; label: string }[] = [
+  { value: "same", label: "모든 페이지 동일 형식" },
+  { value: "split", label: "첫 페이지/연속 페이지 분리" },
+]
 
 type ManualLabel =
   | "project_name"
@@ -61,6 +75,7 @@ type ManualLabel =
   | "x_coord"
   | "y_coord"
   | "elevation"
+  | "depth"
   | "top_depth"
   | "bottom_depth"
   | "stratum_name"
@@ -73,8 +88,7 @@ const MANUAL_LABELS: { value: ManualLabel; label: string }[] = [
   { value: "x_coord", label: "X 좌표" },
   { value: "y_coord", label: "Y 좌표" },
   { value: "elevation", label: "표고" },
-  { value: "top_depth", label: "상심도 열" },
-  { value: "bottom_depth", label: "하심도 열" },
+  { value: "depth", label: "심도 열" },
   { value: "stratum_name", label: "지층명 열" },
   { value: "crs", label: "기준좌표계" },
 ]
@@ -198,11 +212,15 @@ function DropZone({
 function AutoParseTab({
   projects,
   loadingProjects,
+  lockedProjectId,
+  returnUrl,
 }: {
   projects: Project[]
   loadingProjects: boolean
+  lockedProjectId?: number
+  returnUrl?: string
 }) {
-  const [projectId, setProjectId] = useState<number | "">("")
+  const [projectId, setProjectId] = useState<number | "">(lockedProjectId ?? "")
   const [file, setFile] = useState<File | null>(null)
   const [job, setJob] = useState<ExtractionJob | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -232,6 +250,8 @@ function AutoParseTab({
       const form = new FormData()
       if (projectId !== "") form.append("project_id", String(projectId))
       form.append("pdf_file", file)
+      // lockedProjectId가 있으면 신규 보완 시추공으로 마킹
+      if (lockedProjectId) form.append("is_supplementary", "true")
       const created = await apiPostForm<{ job_id: number; status: JobStatus; auto_project: boolean }>(
         "/api/v1/pdf-extraction/upload",
         form,
@@ -268,9 +288,9 @@ function AutoParseTab({
         <span className="text-sm font-medium text-foreground">저장 프로젝트</span>
         <select
           value={projectId}
-          disabled={loadingProjects || busy}
+          disabled={loadingProjects || busy || !!lockedProjectId}
           onChange={(e) => setProjectId(e.target.value ? Number(e.target.value) : "")}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-70 disabled:cursor-not-allowed"
         >
           <option value="">
             {loadingProjects ? "프로젝트 불러오는 중" : "문서에서 프로젝트명 자동 감지"}
@@ -281,6 +301,11 @@ function AutoParseTab({
             </option>
           ))}
         </select>
+        {lockedProjectId && (
+          <p className="text-xs text-sky-300 mt-1">
+            ✓ 프로젝트가 고정되어 있습니다. 저장 후 시추 관리 탭으로 돌아가세요.
+          </p>
+        )}
       </label>
 
       <DropZone
@@ -314,12 +339,23 @@ function AutoParseTab({
             시추공 {job.borehole_count || job.result?.borehole_count || 0}개,
             지층 {job.result?.stratum_count || 0}개가 저장되었습니다.
           </p>
-          <a
-            href="http://localhost:5173/"
-            className="mt-3 inline-flex text-xs font-medium text-emerald-100 underline-offset-4 hover:underline"
-          >
-            3D 뷰어에서 확인
-          </a>
+          <div className="mt-3 flex gap-3">
+            {returnUrl ? (
+              <a
+                href={returnUrl}
+                className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 transition-colors"
+              >
+                ← 시추 관리로 돌아가기
+              </a>
+            ) : (
+              <a
+                href="http://localhost:5173/"
+                className="text-xs font-medium text-emerald-100 underline-offset-4 hover:underline"
+              >
+                3D 뷰어에서 확인
+              </a>
+            )}
+          </div>
         </div>
       )}
 
@@ -378,6 +414,8 @@ function PreviewPanel({
         </div>
       </div>
 
+      <CoordinatePreviewMap rows={rows} />
+
       <div className="max-h-[360px] overflow-auto rounded-md border border-sky-400/20 bg-background/60">
         <table className="w-full min-w-[760px] text-left text-xs">
           <thead className="sticky top-0 bg-card text-muted-foreground">
@@ -420,18 +458,24 @@ function PreviewPanel({
 function ManualTab({
   projects,
   loadingProjects,
+  lockedProjectId,
+  returnUrl,
 }: {
   projects: Project[]
   loadingProjects: boolean
+  lockedProjectId?: number
+  returnUrl?: string
 }) {
   const imageRef = useRef<HTMLImageElement>(null)
-  const [projectId, setProjectId] = useState<number | "">("")
+  const [projectId, setProjectId] = useState<number | "">(lockedProjectId ?? "")
   const [file, setFile] = useState<File | null>(null)
   const [manualJob, setManualJob] = useState<ManualUpload | null>(null)
   const [job, setJob] = useState<ExtractionJob | null>(null)
   const [pageNumber, setPageNumber] = useState(1)
   const [boxes, setBoxes] = useState<ManualBox[]>([])
-  const [activeLabel, setActiveLabel] = useState<ManualLabel>("bottom_depth")
+  const [pageMode, setPageMode] = useState<PageMode>("split")
+  const [activeTemplate, setActiveTemplate] = useState<ManualTemplate>("first")
+  const [activeLabel, setActiveLabel] = useState<ManualLabel>("depth")
   const [draftBox, setDraftBox] = useState<ManualBox | null>(null)
   const [drawingStart, setDrawingStart] = useState<[number, number] | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -485,6 +529,7 @@ function ManualTab({
     setDraftBox({
       id: "draft",
       label: activeLabel,
+      template: activeTemplate,
       page: pageNumber,
       rect: [point[0], point[1], point[0], point[1]],
     })
@@ -524,7 +569,14 @@ function ManualTab({
     try {
       const next = await apiPostJson<ExtractionJob>(
         `/api/v1/pdf-extraction/jobs/${manualJob.job_id}/extract-boxes`,
-        { box_definitions: { boxes } },
+        {
+          box_definitions: {
+            mode: "auto_borehole_pages",
+            page_mode: pageMode,
+            first_page_detector: "borehole_name",
+            boxes: boxes.filter((box) => pageMode === "split" || box.template === "first"),
+          },
+        },
       )
       setJob(next)
     } catch (err) {
@@ -548,8 +600,16 @@ function ManualTab({
     }
   }
 
-  const pageBoxes = boxes.filter((box) => box.page === pageNumber)
-  const requiredReady = hasBox(boxes, "bottom_depth") && hasBox(boxes, "stratum_name")
+  const pageBoxes = boxes.filter((box) => box.page === pageNumber && box.template === activeTemplate)
+  const firstBoxes = boxes.filter((box) => box.template === "first")
+  const continuationBoxes = boxes.filter((box) => box.template === "continuation")
+  const requiredReady = pageMode === "same"
+    ? hasBox(firstBoxes, "borehole_name") && hasBox(firstBoxes, "depth") && hasBox(firstBoxes, "stratum_name")
+    : hasBox(firstBoxes, "borehole_name") &&
+      hasBox(firstBoxes, "depth") &&
+      hasBox(firstBoxes, "stratum_name") &&
+      hasBox(continuationBoxes, "depth") &&
+      hasBox(continuationBoxes, "stratum_name")
   const pageImage = manualJob
     ? `${API_BASE}/api/v1/pdf-extraction/jobs/${manualJob.job_id}/pages/${pageNumber}.png`
     : null
@@ -560,9 +620,9 @@ function ManualTab({
         <span className="text-sm font-medium text-foreground">저장 프로젝트</span>
         <select
           value={projectId}
-          disabled={loadingProjects || submitting || Boolean(manualJob)}
+          disabled={loadingProjects || submitting || Boolean(manualJob) || !!lockedProjectId}
           onChange={(e) => setProjectId(e.target.value ? Number(e.target.value) : "")}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-70 disabled:cursor-not-allowed"
         >
           <option value="">
             {loadingProjects ? "프로젝트 불러오는 중" : "문서에서 프로젝트명 자동 감지"}
@@ -573,6 +633,11 @@ function ManualTab({
             </option>
           ))}
         </select>
+        {lockedProjectId && (
+          <p className="text-xs text-sky-300 mt-1">
+            ✓ 프로젝트가 고정되어 있습니다. 저장 후 시추 관리 탭으로 돌아가세요.
+          </p>
+        )}
       </label>
 
       <DropZone accept=".pdf" file={file} onFile={handleFile} hint="PDF 파일만 지원" />
@@ -646,6 +711,44 @@ function ManualTab({
 
           <div className="space-y-3 rounded-lg border border-border bg-card/40 p-3">
             <label className="block space-y-2">
+              <span className="text-xs font-medium text-muted-foreground">페이지 처리 방식</span>
+              <select
+                value={pageMode}
+                onChange={(event) => {
+                  const nextMode = event.target.value as PageMode
+                  setPageMode(nextMode)
+                  if (nextMode === "same") setActiveTemplate("first")
+                }}
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+              >
+                {PAGE_MODES.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="grid grid-cols-2 gap-1 rounded-md border border-border bg-background p-1">
+              {MANUAL_TEMPLATES.map((item) => (
+                <button
+                  key={item.value}
+                  onClick={() => setActiveTemplate(item.value)}
+                  disabled={pageMode === "same" && item.value === "continuation"}
+                  className={cn(
+                    "rounded px-2 py-1.5 text-xs font-medium transition-colors",
+                    activeTemplate === item.value
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                    pageMode === "same" && item.value === "continuation" && "cursor-not-allowed opacity-40",
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+
+            <label className="block space-y-2">
               <span className="text-xs font-medium text-muted-foreground">박스 라벨</span>
               <select
                 value={activeLabel}
@@ -668,7 +771,9 @@ function ManualTab({
                 >
                   <div className="min-w-0">
                     <p className="truncate text-xs font-medium text-foreground">{labelText(box.label)}</p>
-                    <p className="text-[11px] text-muted-foreground">페이지 {box.page}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {templateText(box.template)} · 페이지 {box.page}
+                    </p>
                   </div>
                   <button
                     className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -709,6 +814,16 @@ function ManualTab({
             시추공 {job.borehole_count || job.result?.borehole_count || 0}개,
             지층 {job.result?.stratum_count || 0}개가 저장되었습니다.
           </p>
+          {returnUrl && (
+            <div className="mt-3">
+              <a
+                href={returnUrl}
+                className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 transition-colors"
+              >
+                ← 시추 관리로 돌아가기
+              </a>
+            </div>
+          )}
         </div>
       )}
 
@@ -738,14 +853,30 @@ export default function App() {
   const [loadingProjects, setLoadingProjects] = useState(true)
   const [projectError, setProjectError] = useState<string | null>(null)
 
+  // URL 파라미터: project_id (잠금), return_url (완료 후 복귀)
+  const urlParams = new URLSearchParams(window.location.search)
+  const lockedProjectId = urlParams.get("project_id") ? Number(urlParams.get("project_id")) : undefined
+  const returnUrl = urlParams.get("return_url") ?? undefined
+
   useEffect(() => {
+    if (lockedProjectId) {
+      setProjects([{ id: lockedProjectId, name: `Project #${lockedProjectId}` }])
+      setLoadingProjects(false)
+      setProjectError(null)
+      return
+    }
+
     let mounted = true
-    apiGet<Project[]>("/api/v1/projects/")
+    apiGet<Project[]>("/api/v1/projects?has_bbox=true")
       .then((data) => {
         if (mounted) setProjects(data)
       })
       .catch((err) => {
-        if (mounted) setProjectError(err instanceof Error ? err.message : "프로젝트를 불러오지 못했습니다.")
+        if (mounted) {
+          console.warn("프로젝트 목록을 불러오지 못했습니다.", err)
+          setProjects([])
+          setProjectError(null)
+        }
       })
       .finally(() => {
         if (mounted) setLoadingProjects(false)
@@ -753,11 +884,29 @@ export default function App() {
     return () => {
       mounted = false
     }
-  }, [])
+  }, [lockedProjectId])
 
   return (
     <div className="min-h-screen bg-background text-foreground">
       <NavBar />
+
+      {/* 프로젝트 연동 배너 */}
+      {lockedProjectId && (
+        <div className="border-b border-sky-500/30 bg-sky-500/10 px-4 py-2.5 text-sm text-sky-200 flex items-center justify-between">
+          <span>
+            시추 관리에서 연동됨 — 저장된 데이터는 해당 프로젝트에 자동 반영됩니다.
+          </span>
+          {returnUrl && (
+            <a
+              href={returnUrl}
+              className="text-xs text-sky-100 hover:underline underline-offset-2"
+            >
+              ← 시추 관리로 돌아가기
+            </a>
+          )}
+        </div>
+      )}
+
       <main className={cn("mx-auto space-y-6 px-4 py-8", tab === "manual" ? "max-w-6xl" : "max-w-2xl")}>
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">PDF 업로드</h1>
@@ -788,9 +937,19 @@ export default function App() {
         )}
 
         {tab === "auto" ? (
-          <AutoParseTab projects={projects} loadingProjects={loadingProjects} />
+          <AutoParseTab
+            projects={projects}
+            loadingProjects={loadingProjects}
+            lockedProjectId={lockedProjectId}
+            returnUrl={returnUrl}
+          />
         ) : (
-          <ManualTab projects={projects} loadingProjects={loadingProjects} />
+          <ManualTab
+            projects={projects}
+            loadingProjects={loadingProjects}
+            lockedProjectId={lockedProjectId}
+            returnUrl={returnUrl}
+          />
         )}
       </main>
     </div>
@@ -798,47 +957,71 @@ export default function App() {
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { credentials: "include" })
-  return parseResponse<T>(response)
+  return apiRequest<T>("GET", path)
 }
 
 async function apiPostForm<T>(path: string, body: FormData): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    credentials: "include",
-    body,
-  })
-  return parseResponse<T>(response)
+  return apiRequest<T>("POST", path, body)
 }
 
 async function apiPost<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    credentials: "include",
-  })
-  return parseResponse<T>(response)
+  return apiRequest<T>("POST", path)
 }
 
 async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  })
-  return parseResponse<T>(response)
+  return apiRequest<T>("POST", path, JSON.stringify(body), "application/json")
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
-  if (response.ok) return response.json() as Promise<T>
-  let message = `요청 실패 (${response.status})`
+function apiRequest<T>(
+  method: "GET" | "POST",
+  path: string,
+  body?: XMLHttpRequestBodyInit,
+  contentType?: string,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open(method, `${API_BASE}${path}`, true)
+    request.withCredentials = true
+    if (contentType) request.setRequestHeader("Content-Type", contentType)
+
+    request.onload = () => {
+      const text = request.responseText || "null"
+      if (request.status >= 200 && request.status < 300) {
+        try {
+          resolve(JSON.parse(text) as T)
+        } catch {
+          resolve(null as T)
+        }
+        return
+      }
+
+      reject(new Error(parseErrorMessage(request.status, text)))
+    }
+
+    request.onerror = () => {
+      reject(new Error("API request failed. Check that the backend is running and CORS allows this origin."))
+    }
+
+    request.send(body)
+  })
+}
+
+function parseErrorMessage(status: number, text: string) {
+  let message = `요청 실패 (${status})`
   try {
-    const body = await response.json()
+    const body = JSON.parse(text)
     message = body.detail ?? message
   } catch {
     // Keep status-based message.
   }
-  throw new Error(message)
+  if (
+    message.includes("Connect call failed") ||
+    message.includes("connection refused") ||
+    message.includes("ECONNREFUSED")
+  ) {
+    return "데이터베이스에 연결할 수 없습니다. PostgreSQL(127.0.0.1:5432)을 먼저 실행한 뒤 다시 시도해 주세요."
+  }
+  return message
 }
 
 function buttonLabel({
@@ -859,6 +1042,152 @@ function buttonLabel({
 function cell(value: unknown) {
   if (value === null || value === undefined || value === "") return "-"
   return String(value)
+}
+
+type PreviewPoint = {
+  id: string
+  name: string
+  lon: number
+  lat: number
+  crs?: string
+}
+
+function CoordinatePreviewMap({ rows }: { rows: PreviewRow[] }) {
+  const points = uniquePreviewPoints(rows)
+  if (points.length === 0) {
+    return (
+      <div className="rounded-md border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+        좌표 위치 미리보기를 표시할 수 없습니다. 기준좌표계 또는 좌표값을 확인한 뒤 다시 파싱해 주세요.
+      </div>
+    )
+  }
+
+  const center = averagePoint(points)
+  const zoom = 14
+  const centerWorld = lonLatToWorld(center.lon, center.lat, zoom)
+  const tileX = Math.floor(centerWorld.x / 256)
+  const tileY = Math.floor(centerWorld.y / 256)
+  const offsetX = centerWorld.x - tileX * 256
+  const offsetY = centerWorld.y - tileY * 256
+  const tiles = [-1, 0, 1].flatMap((dy) =>
+    [-1, 0, 1].map((dx) => ({
+      key: `${dx}:${dy}`,
+      x: tileX + dx,
+      y: tileY + dy,
+      left: 128 + dx * 256 - offsetX,
+      top: 128 + dy * 256 - offsetY,
+    })),
+  )
+  const markers = points.map((point) => {
+    const world = lonLatToWorld(point.lon, point.lat, zoom)
+    return {
+      ...point,
+      left: world.x - centerWorld.x + 384,
+      top: world.y - centerWorld.y + 384,
+    }
+  })
+  const crsLabels = Array.from(new Set(points.map((point) => point.crs).filter(Boolean)))
+
+  return (
+    <div className="overflow-hidden rounded-md border border-sky-400/20 bg-background/60">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sky-400/20 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <MapPin className="h-4 w-4 text-sky-300" />
+          <span className="text-xs font-medium text-foreground">좌표 위치 미리보기</span>
+        </div>
+        <span className="text-[11px] text-muted-foreground">
+          {points.length}개 시추공 {crsLabels.length ? `· ${crsLabels.join(", ")}` : ""}
+        </span>
+      </div>
+      <div className="relative h-56 overflow-hidden bg-slate-950">
+        <div className="absolute left-1/2 top-1/2 h-[768px] w-[768px] -translate-x-1/2 -translate-y-1/2">
+          {tiles.map((tile) => (
+            <img
+              key={tile.key}
+              src={`https://tile.openstreetmap.org/${zoom}/${tile.x}/${tile.y}.png`}
+              alt=""
+              className="absolute h-64 w-64 select-none"
+              draggable={false}
+              style={{ left: tile.left, top: tile.top }}
+            />
+          ))}
+          {markers.map((marker) => (
+            <div
+              key={marker.id}
+              className="absolute -translate-x-1/2 -translate-y-full"
+              style={{ left: marker.left, top: marker.top }}
+              title={`${marker.name} (${marker.lat.toFixed(6)}, ${marker.lon.toFixed(6)})`}
+            >
+              <div className="flex flex-col items-center">
+                <span className="mb-1 rounded bg-slate-950/90 px-1.5 py-0.5 text-[10px] font-medium text-sky-100 shadow">
+                  {marker.name}
+                </span>
+                <MapPin className="h-6 w-6 fill-sky-300 text-sky-950 drop-shadow" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="grid gap-2 border-t border-sky-400/20 px-3 py-2 text-[11px] text-muted-foreground sm:grid-cols-2">
+        <span>중심: {center.lat.toFixed(6)}, {center.lon.toFixed(6)}</span>
+        <span>위치가 현장과 다르면 기준좌표계를 수정해서 다시 확인하세요.</span>
+      </div>
+    </div>
+  )
+}
+
+function uniquePreviewPoints(rows: PreviewRow[]): PreviewPoint[] {
+  const points = new Map<string, PreviewPoint>()
+  rows.forEach((row, index) => {
+    const lon = toNumber(row.lon_wgs84)
+    const lat = toNumber(row.lat_wgs84)
+    if (lon === null || lat === null) return
+    if (lon < 120 || lon > 135 || lat < 30 || lat > 45) return
+    const name = previewBoreholeName(row, index)
+    const key = `${name}:${lon.toFixed(7)}:${lat.toFixed(7)}`
+    if (!points.has(key)) {
+      points.set(key, {
+        id: key,
+        name,
+        lon,
+        lat,
+        crs: row.meta_crs ? String(row.meta_crs) : undefined,
+      })
+    }
+  })
+  return Array.from(points.values())
+}
+
+function previewBoreholeName(row: PreviewRow, index: number) {
+  const record = row as Record<string, unknown>
+  const direct = record["시추공명"] ?? record["borehole_name"]
+  if (direct) return String(direct)
+  const fuzzyKey = Object.keys(record).find((key) => key.includes("시추") || key.includes("怨듬챸"))
+  const fuzzyValue = fuzzyKey ? record[fuzzyKey] : null
+  return fuzzyValue ? String(fuzzyValue) : `BH-${index + 1}`
+}
+
+function averagePoint(points: PreviewPoint[]) {
+  const total = points.reduce(
+    (acc, point) => ({ lon: acc.lon + point.lon, lat: acc.lat + point.lat }),
+    { lon: 0, lat: 0 },
+  )
+  return { lon: total.lon / points.length, lat: total.lat / points.length }
+}
+
+function toNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null
+  const parsed = Number(String(value).replace(/,/g, ""))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function lonLatToWorld(lon: number, lat: number, zoom: number) {
+  const sinLat = Math.sin((lat * Math.PI) / 180)
+  const scale = 256 * 2 ** zoom
+  return {
+    x: ((lon + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale,
+  }
 }
 
 function clamp(value: number) {
@@ -886,6 +1215,10 @@ function boxStyle(rect: [number, number, number, number]): CSSProperties {
 
 function labelText(label: ManualLabel) {
   return MANUAL_LABELS.find((item) => item.value === label)?.label ?? label
+}
+
+function templateText(template: ManualTemplate) {
+  return MANUAL_TEMPLATES.find((item) => item.value === template)?.label ?? template
 }
 
 function hasBox(boxes: ManualBox[], label: ManualLabel) {

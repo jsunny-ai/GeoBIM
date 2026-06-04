@@ -46,6 +46,15 @@ services:
       JWT_EXPIRE_MINUTES: "60"
       CORS_ORIGINS: http://localhost:5170,http://localhost:5171,http://localhost:5172,http://localhost:5173,http://localhost:5174
       PDF_CONVERT_DATA_DIR: pdf_convert
+      PDF_ODL_ENABLED: "true"
+      PDF_ODL_OUTPUT_DIR: pdf_convert/data/odl
+      PDF_ODL_TIMEOUT_SECONDS: "60"
+      PDF_ODL_HYBRID_ENABLED: "true"
+      PDF_ODL_HYBRID_URL: http://host.docker.internal:5002
+      PDF_ODL_HYBRID_MODE: full
+      PDF_BOX_OCR_ENABLED: "true"
+      PDF_BOX_OCR_LANG: kor+eng
+      PDF_BOX_OCR_SCALE: "3.0"
       ENVIRONMENT: development
       DEBUG: "true"
     ports:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-StrataGroup = Literal["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"]
+StrataGroup = Literal["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"]
 
 # ---------------------------------------------------------------------------
 # 동의어 맵 (shared/strataColor.ts 의 STRATA_SYNONYMS 와 동일)
@@ -34,9 +34,10 @@ _SYNONYMS: dict[str, StrataGroup] = {
     # 연암
     "연암":       "soft_rock",
     "리핑암":     "soft_rock",
-    # 경암 (보통암 포함)
+    # 보통암
+    "보통암":     "normal_rock",
+    # 경암
     "경암":       "hard_rock",
-    "보통암":     "hard_rock",
     "발파암":     "hard_rock",
     "극경암":     "hard_rock",
 }
@@ -51,6 +52,7 @@ STRATA_COLORS_HEX: dict[StrataGroup, str] = {
     "soil":          "#8B7355",
     "weathered_rock":"#C4A57B",
     "soft_rock":     "#6B8E5A",
+    "normal_rock":   "#5F6552",
     "hard_rock":     "#3D3D3D",
     "unknown":       "#B4B4B4",
 }
@@ -59,6 +61,7 @@ STRATA_COLORS_RGB: dict[StrataGroup, tuple[int, int, int]] = {
     "soil":          (139, 115,  85),
     "weathered_rock":(196, 165, 123),
     "soft_rock":     (107, 142,  90),
+    "normal_rock":   ( 95, 101,  82),
     "hard_rock":     ( 61,  61,  61),
     "unknown":       (180, 180, 180),
 }
@@ -76,7 +79,7 @@ def normalize_strata_group(raw: str | None) -> StrataGroup:
 
     # 이미 표준 영어 지층 코드 형태로 매핑되어 온 경우, 한글 필터링 전에 즉시 반환
     raw_lower = raw.strip().lower()
-    if raw_lower in ["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"]:
+    if raw_lower in ["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"]:
         return raw_lower
 
     cleaned = re.sub(r"\s+", "", raw.strip())

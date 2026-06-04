@@ -478,6 +478,86 @@ export function useCesiumMap(
     viewer.scene.requestRender()
   }
 
+  const setSelection = (
+    bbox: [number, number, number, number],
+    polyPoints: { lng: number; lat: number }[],
+    bhIds: number[]
+  ) => {
+    const viewer = viewerRef.current
+    if (!viewer) return
+
+    cancelDrawing()
+
+    const [minLng, minLat, maxLng, maxLat] = bbox
+    const rect = Cesium.Rectangle.fromDegrees(minLng, minLat, maxLng, maxLat)
+    editRectangleRef.current = rect
+
+    const nw = new Cesium.Cartographic(rect.west, rect.north)
+    const ne = new Cesium.Cartographic(rect.east, rect.north)
+    const se = new Cesium.Cartographic(rect.east, rect.south)
+    const sw = new Cesium.Cartographic(rect.west, rect.south)
+    setPolygon([nw, ne, se, sw, nw])
+
+    const selected = boreholesRef.current.filter((bh) => bhIds.includes(bh.id))
+    setSelectedBoreholes(selected)
+
+    activePolygonRef.current = viewer.entities.add({
+      rectangle: {
+        coordinates: new Cesium.CallbackProperty(() => editRectangleRef.current, false),
+        material: Cesium.Color.RED.withAlpha(0.2),
+        outline: true,
+        outlineColor: Cesium.Color.RED,
+        outlineWidth: 2,
+      },
+    })
+
+    for (let i = 0; i < 4; i++) {
+      const handle = viewer.entities.add({
+        position: new Cesium.CallbackProperty(() => {
+          const r = editRectangleRef.current
+          if (!r) return undefined
+          if (i === 0) return Cesium.Cartesian3.fromRadians(r.west, r.north)
+          if (i === 1) return Cesium.Cartesian3.fromRadians(r.east, r.north)
+          if (i === 2) return Cesium.Cartesian3.fromRadians(r.east, r.south)
+          if (i === 3) return Cesium.Cartesian3.fromRadians(r.west, r.south)
+        }, false),
+        point: {
+          pixelSize: 12,
+          color: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.RED,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        }
+      })
+      activeHandlesRef.current.push(handle)
+    }
+
+    // 선택한 영역이 뷰포트의 약 65% 수준으로 여유 있게 보이도록 줌 아웃 비율을 계산하여 BBox를 확장
+    const centerLng = (minLng + maxLng) / 2
+    const centerLat = (minLat + maxLat) / 2
+    const halfLngSpan = (maxLng - minLng) / 2
+    const halfLatSpan = (maxLat - minLat) / 2
+
+    const expandedMinLng = centerLng - (halfLngSpan / 0.65)
+    const expandedMinLat = centerLat - (halfLatSpan / 0.65)
+    const expandedMaxLng = centerLng + (halfLngSpan / 0.65)
+    const expandedMaxLat = centerLat + (halfLatSpan / 0.65)
+
+    const flyRect = Cesium.Rectangle.fromDegrees(
+      expandedMinLng,
+      expandedMinLat,
+      expandedMaxLng,
+      expandedMaxLat
+    )
+
+    viewer.camera.flyTo({
+      destination: flyRect,
+      duration: 1.5,
+    })
+
+    viewer.scene.requestRender()
+  }
+
   const zoomIn = () => {
     const v = viewerRef.current
     if (!v) return
@@ -500,6 +580,7 @@ export function useCesiumMap(
     cancelDrawing,
     zoomIn,
     zoomOut,
+    setSelection,
   }
 }
 

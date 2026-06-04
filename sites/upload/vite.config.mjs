@@ -25,5 +25,14 @@ export default defineConfig({
       "@shared": resolve(__dirname, "../../shared"),
     },
   },
-  server: { port: 5174, strictPort: true },
+  server: {
+    port: 5174,
+    strictPort: true,
+    proxy: {
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+    },
+  },
 })

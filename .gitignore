@@ -130,3 +130,13 @@ logs/
 
 # Test project folder
 test_project/
+
+# Local environment, database, scratch, and build cache overrides
+backend/.venv-codex/
+backend/app.db
+*.tsbuildinfo
+backend/scratch_*.py
+backend/all_projects_count.txt
+backend/proj20_all_strata.txt
+backend/project_check_results.txt
+strata_check.txt

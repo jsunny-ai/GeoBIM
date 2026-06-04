@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     # ----- PDF Convert -----
     pdf_convert_data_dir: str = "pdf_convert"
     java_bin_path: str = ""
+    pdf_odl_enabled: bool = True
+    pdf_odl_output_dir: str = "pdf_convert/data/odl"
+    pdf_odl_timeout_seconds: int = 60
+    pdf_odl_hybrid_enabled: bool = True
+    pdf_odl_hybrid_url: str = "http://host.docker.internal:5002"
+    pdf_odl_hybrid_mode: str = "full"
+    pdf_box_ocr_enabled: bool = True
+    pdf_box_ocr_lang: str = "kor+eng"
+    pdf_box_ocr_scale: float = 3.0
 
     # ----- 보안 -----
     secret_key: str = "change-me-in-production-min-32-chars"

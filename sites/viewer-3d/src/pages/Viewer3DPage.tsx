@@ -8,19 +8,19 @@ import { parseUrlParams } from "@/lib/parseUrl"
 import type { Borehole } from "@/lib/types"
 
 const C = {
-  bg: "#0a0e1a",
-  border: "#2a3344",
-  text: "#e8e8e8",
-  secondary: "#cbd5e1",
-  tertiary: "#8a9bb8",
-  red: "#e85353",
+  bg: "#faf8f5",
+  border: "#e9e4da",
+  text: "#1c1917",
+  secondary: "#44403c",
+  tertiary: "#78716c",
+  red: "#dc2626",
 } as const
 
 const statusBar: React.CSSProperties = {
   position: "absolute",
   bottom: 14,
   left: 14,
-  background: "rgba(15,20,32,.92)",
+  background: "rgba(250,248,245,.93)",
   padding: "8px 13px",
   borderRadius: 7,
   fontSize: 11,
@@ -35,7 +35,7 @@ const hint: React.CSSProperties = {
   position: "absolute",
   top: 14,
   right: 14,
-  background: "rgba(15,20,32,.85)",
+  background: "rgba(250,248,245,.88)",
   padding: "9px 12px",
   borderRadius: 6,
   fontSize: 11,
@@ -45,14 +45,18 @@ const hint: React.CSSProperties = {
   fontFamily: "'Noto Sans KR',sans-serif",
 }
 
-const { polygon, boreholeIds, bbox, error: parseError } = parseUrlParams()
-
 export default function Viewer3DPage() {
   const containerRef = useRef<HTMLDivElement>(null)
-  const bhPosRef = useRef<Record<number, { x: number; y: number; z: number }>>({})
+  const bhPosRef = useRef<Record<string, { x: number; y: number; z: number }>>({})
+
+  const [bbox, setBbox] = useState<[number, number, number, number] | null>(null)
+  const [polygon, setPolygon] = useState<any[] | null>(null)
+  const [boreholeIds, setBoreholeIds] = useState<number[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [isLoadingProject, setIsLoadingProject] = useState(true)
 
   const [status, setStatus] = useState("초기화 중...")
-  const [selectedBh, setSelectedBh] = useState<number | null>(null)
+  const [selectedBh, setSelectedBh] = useState<string | null>(null)
   const [verticalExag, setVerticalExag] = useState(1)
   const [depthBelowMSL, setDepthBelowMSL] = useState(50)
   const [basemap, setBasemap] = useState<Basemap>("Base")
@@ -63,6 +67,7 @@ export default function Viewer3DPage() {
     soil: true,
     weathered_rock: true,
     soft_rock: true,
+    normal_rock: true,
     hard_rock: true,
     unknown: true,
   })
@@ -72,12 +77,51 @@ export default function Viewer3DPage() {
   const [bhState, setBhState] = useState<(Borehole & { dem_elevation?: number })[]>([])
 
   useEffect(() => {
+    const sp = new URLSearchParams(window.location.search)
+    const projId = sp.get("projectId") || sp.get("project_id")
+
+    if (projId) {
+      setIsLoadingProject(true)
+      ;(async () => {
+        try {
+          const res = await fetch(`/api/v1/projects/${projId}`)
+          if (!res.ok) throw new Error("프로젝트를 불러오지 못했습니다.")
+          const proj = await res.json()
+          if (proj.bbox && typeof proj.bbox === "object") {
+            const { bbox: rectBbox, polygon: rectPoly, borehole_ids: bhIds } = proj.bbox
+            setBbox(rectBbox)
+            setPolygon(rectPoly)
+            setBoreholeIds(bhIds || [])
+            setError(null)
+          } else {
+            throw new Error("프로젝트에 저장된 영역 정보가 없습니다.")
+          }
+        } catch (err: any) {
+          setError(err.message || String(err))
+        } finally {
+          setIsLoadingProject(false)
+        }
+      })()
+    } else {
+      setIsLoadingProject(false)
+      const parsed = parseUrlParams()
+      if (parsed.error) {
+        setError(parsed.error)
+      } else {
+        setBbox(parsed.bbox)
+        setPolygon(parsed.polygon)
+        setBoreholeIds(parsed.boreholeIds)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (boreholes && boreholes.length > 0) {
       setBhState(boreholes)
     }
   }, [boreholes])
 
-  const handleUpdateElevation = async (bhId: number, newElev: number) => {
+  const handleUpdateElevation = async (bhId: string, newElev: number) => {
     const response = await fetch(`/api/v1/boreholes/${bhId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -88,7 +132,7 @@ export default function Viewer3DPage() {
     }
 
     setBhState((prev) =>
-      prev.map((b) => (b.id === bhId ? { ...b, elevation: newElev } : b))
+      prev.map((b) => (Number(b.id) === Number(bhId) ? { ...b, elevation: newElev } : b))
     )
   }
 
@@ -106,108 +150,115 @@ export default function Viewer3DPage() {
     bhPosRef,
   }
 
-  const { focusBorehole } = useGeoModel(sceneRef, cameraRef, controlsRef, bhState, bbox, polygon, modelSettings)
+  const { focusBorehole } = useGeoModel(sceneRef, cameraRef, controlsRef, bhState, bbox, polygon, modelSettings, containerRef)
 
-  if (parseError || !polygon) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          height: "100vh",
-          alignItems: "center",
-          justifyContent: "center",
-          background: C.bg,
-          color: C.text,
-          flexDirection: "column",
-          gap: 16,
-          fontFamily: "'Noto Sans KR',sans-serif",
-        }}
-      >
-        <p style={{ fontSize: 13, color: C.red }}>{parseError ?? "영역 정보가 없습니다."}</p>
-        <a href="http://localhost:5172/" style={{ fontSize: 12, color: C.tertiary, textDecoration: "underline" }}>
-          1단계 지도로 돌아가기
-        </a>
-      </div>
-    )
-  }
+  // ── 항상 viewport div를 DOM에 유지 ──────────────────────────────────────
+  // useThreeScene의 effect 의존성이 [containerRef](ref 객체)라서
+  // isLoadingProject/error 상태에 따라 viewport div를 조건부 제거하면
+  // containerRef.current 가 null인 채로 effect가 1회 실행 후 재실행 안 됨 →
+  // sceneRef.current = null 고착 → useGeoModel 조기 반환 → "초기화 중..." 고착
+  // 해결: viewport div는 항상 렌더링하고, loading/error는 오버레이로 처리
+
+  const showLoadingOverlay = isLoadingProject
+  const showErrorOverlay   = !isLoadingProject && !!(error || !polygon || !bbox)
 
   return (
-    <div style={{ position: "relative", height: "100vh", display: "flex", background: "#000", overflow: "hidden", userSelect: "none" }}>
-      <div style={{ position: "relative", flex: 1 }}>
+    <div style={{ position: "relative", height: "100vh", display: "flex", background: C.bg, overflow: "hidden", userSelect: "none" }}>
+      <div style={{ position: "relative", flex: 1, overflow: "hidden" }}>
+        {/* Three.js 컨테이너 — 항상 DOM에 유지해야 scene 초기화 보장 */}
         <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
-        <ViewerControls
-          basemap={basemap}
-          setBasemap={setBasemap}
-          showDrape={showDrape}
-          setShowDrape={setShowDrape}
-          renderMode={renderMode}
-          setRenderMode={setRenderMode}
-          verticalExag={verticalExag}
-          setVerticalExag={setVerticalExag}
-          depthBelowMSL={depthBelowMSL}
-          setDepthBelowMSL={setDepthBelowMSL}
-          visibility={visibility}
-          setVisibility={setVisibility}
-          showColumns={showColumns}
-          setShowColumns={setShowColumns}
-        />
-
-        <div style={hint}>
-          <div>마우스 좌클릭 + 드래그 = 3D 회전</div>
-          <div>Shift + 마우스 드래그 = 시점 이동</div>
-          <div>마우스 휠 = 카메라 줌 인/아웃</div>
-        </div>
-
-        {fetchStatus === "loading" && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: 50,
-              left: "50%",
-              transform: "translateX(-50%)",
-              zIndex: 20,
-              background: "rgba(0,0,0,0.8)",
-              color: C.text,
-              fontSize: 12,
-              padding: "6px 16px",
-              borderRadius: 20,
-              fontFamily: "'Noto Sans KR',sans-serif",
-            }}
-          >
-            시추공 데이터를 불러오는 중...
-          </div>
-        )}
-        {fetchStatus === "error" && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: 50,
-              left: "50%",
-              transform: "translateX(-50%)",
-              zIndex: 20,
-              background: "rgba(127,29,29,0.8)",
-              color: "#fca5a5",
-              fontSize: 12,
-              padding: "6px 16px",
-              borderRadius: 20,
-              fontFamily: "'Noto Sans KR',sans-serif",
-            }}
-          >
-            {fetchErr}
+        {/* ── 로딩 오버레이 ── */}
+        {showLoadingOverlay && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 50,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: C.bg, color: C.text, fontSize: 14,
+            fontFamily: "'Noto Sans KR',sans-serif",
+          }}>
+            <p>프로젝트 지질 데이터 로딩 중…</p>
           </div>
         )}
 
-        <div style={statusBar}>{status}</div>
+        {/* ── 에러 오버레이 ── */}
+        {showErrorOverlay && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 50,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            flexDirection: "column", gap: 16,
+            background: C.bg, color: C.text,
+            fontFamily: "'Noto Sans KR',sans-serif",
+          }}>
+            <p style={{ fontSize: 13, color: C.red }}>{error ?? "영역 정보가 없습니다."}</p>
+            <a href="http://localhost:5172/" style={{ fontSize: 12, color: C.tertiary, textDecoration: "underline" }}>
+              1단계 지도로 돌아가기
+            </a>
+          </div>
+        )}
+
+        {/* ── 정상 UI (loading/error 아닐 때만 표시) ── */}
+        {!showLoadingOverlay && !showErrorOverlay && (
+          <>
+            <ViewerControls
+              basemap={basemap}
+              setBasemap={setBasemap}
+              showDrape={showDrape}
+              setShowDrape={setShowDrape}
+              renderMode={renderMode}
+              setRenderMode={setRenderMode}
+              verticalExag={verticalExag}
+              setVerticalExag={setVerticalExag}
+              depthBelowMSL={depthBelowMSL}
+              setDepthBelowMSL={setDepthBelowMSL}
+              visibility={visibility}
+              setVisibility={setVisibility}
+              showColumns={showColumns}
+              setShowColumns={setShowColumns}
+            />
+
+            <div style={hint}>
+              <div>마우스 좌클릭 + 드래그 = 3D 회전</div>
+              <div>Shift + 마우스 드래그 = 시점 이동</div>
+              <div>마우스 휠 = 카메라 줌 인/아웃</div>
+            </div>
+
+            {fetchStatus === "loading" && (
+              <div style={{
+                position: "absolute", bottom: 50, left: "50%",
+                transform: "translateX(-50%)", zIndex: 20,
+                background: "rgba(0,0,0,0.8)", color: C.text,
+                fontSize: 12, padding: "6px 16px", borderRadius: 20,
+                fontFamily: "'Noto Sans KR',sans-serif",
+              }}>
+                시추공 데이터를 불러오는 중...
+              </div>
+            )}
+            {fetchStatus === "error" && (
+              <div style={{
+                position: "absolute", bottom: 50, left: "50%",
+                transform: "translateX(-50%)", zIndex: 20,
+                background: "rgba(127,29,29,0.8)", color: "#fca5a5",
+                fontSize: 12, padding: "6px 16px", borderRadius: 20,
+                fontFamily: "'Noto Sans KR',sans-serif",
+              }}>
+                {fetchErr}
+              </div>
+            )}
+
+            <div style={statusBar}>{status}</div>
+          </>
+        )}
       </div>
 
-      <BoreholeTable
-        boreholes={bhState}
-        selectedBh={selectedBh}
-        setSelectedBh={setSelectedBh}
-        focusBorehole={focusBorehole}
-        onUpdateElevation={handleUpdateElevation}
-      />
+      {!showLoadingOverlay && !showErrorOverlay && (
+        <BoreholeTable
+          boreholes={bhState}
+          selectedBh={selectedBh}
+          setSelectedBh={setSelectedBh}
+          focusBorehole={focusBorehole}
+          onUpdateElevation={handleUpdateElevation}
+        />
+      )}
     </div>
   )
 }

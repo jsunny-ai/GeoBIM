@@ -3,17 +3,17 @@ import React from "react"
 export type Basemap = "Satellite" | "Hybrid" | "Base"
 
 const C = {
-  panel: "rgba(15,20,32,.95)",
-  border: "#2a3344",
-  text: "#e8e8e8",
-  secondary: "#cbd5e1",
-  tertiary: "#8a9bb8",
-  btnActive: "#2473bd",
-  btnBorder: "#3084d0",
-  btnIdle: "#1a2030",
-  btnIdleBd: "#3a4a6a",
-  input: "#1a2030",
-  red: "#e85353",
+  panel: "rgba(250,248,245,.97)",
+  border: "#e9e4da",
+  text: "#1c1917",
+  secondary: "#44403c",
+  tertiary: "#78716c",
+  btnActive: "#D4D1CB",
+  btnBorder: "#BEBAB3",
+  btnIdle: "#f2ede6",
+  btnIdleBd: "#e9e4da",
+  input: "#f2ede6",
+  red: "#dc2626",
 } as const
 
 const panelStyle: React.CSSProperties = {
@@ -24,7 +24,7 @@ const panelStyle: React.CSSProperties = {
   padding: "14px 16px",
   borderRadius: 10,
   border: `1px solid ${C.border}`,
-  boxShadow: "0 4px 18px rgba(0,0,0,.5)",
+  boxShadow: "0 4px 18px rgba(0,0,0,.12)",
   minWidth: 250,
   zIndex: 10,
   color: C.text,
@@ -55,7 +55,7 @@ const segActive: React.CSSProperties = {
   flex: 1,
   ...btnBase,
   background: C.btnActive,
-  color: "#fff",
+  color: "#1c1917",
   border: `1px solid ${C.btnBorder}`,
   fontWeight: 600,
 }
@@ -72,6 +72,7 @@ const LAYER_COLOR: Record<string, number> = {
   soil: 0x8b7355,
   weathered_rock: 0xc4a57b,
   soft_rock: 0x6b8e5a,
+  normal_rock: 0x5f6552,
   hard_rock: 0x3d3d3d,
   unknown: 0xb4b4b4,
 }
@@ -80,6 +81,7 @@ const LAYER_LABEL: Record<string, string> = {
   soil: "토사",
   weathered_rock: "풍화암",
   soft_rock: "연암",
+  normal_rock: "보통암",
   hard_rock: "경암",
   unknown: "미분류",
 }
@@ -140,10 +142,32 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
           fontWeight: 700,
           cursor: "pointer",
           fontFamily: "'Noto Sans KR',sans-serif",
-          marginBottom: 12,
+          marginBottom: 6,
         }}
       >
         ← 1단계 지도로 복귀
+      </button>
+
+      <button
+        onClick={() => {
+          const params = new URLSearchParams(window.location.search)
+          window.open(`http://localhost:5175/?${params.toString()}`, "_blank")
+        }}
+        style={{
+          width: "100%",
+          padding: "7px 0",
+          borderRadius: 6,
+          background: "rgba(160,155,148,.15)",
+          border: "1px solid #BEBAB3",
+          color: "#1c1917",
+          fontSize: 12,
+          fontWeight: 700,
+          cursor: "pointer",
+          fontFamily: "'Noto Sans KR',sans-serif",
+          marginBottom: 12,
+        }}
+      >
+        3단계 데이터 보완 · 내보내기 →
       </button>
 
       <div
@@ -240,7 +264,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
             }}
             style={{
               width: 50,
-              background: "#131929",
+              background: C.input,
               border: `1px solid ${C.border}`,
               borderRadius: 4,
               color: C.text,
@@ -264,7 +288,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
 
       <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
         <div style={{ fontSize: 12, color: C.tertiary, marginBottom: 6 }}>지층 표시 제어</div>
-        {["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"].map((key) => {
+        {["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"].map((key) => {
           const on = visibility[key]
           return (
             <div

@@ -5,7 +5,7 @@ import type { Project } from "@/lib/types"
 
 async function fetchProjects(): Promise<Project[]> {
   try {
-    const res = await api.get<Project[]>("/projects")
+    const res = await api.get<Project[]>("/projects?has_bbox=true")
     return res.data
   } catch {
     // 백엔드 없을 때 mock 반환

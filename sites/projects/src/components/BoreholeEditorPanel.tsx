@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -6,16 +6,19 @@ import { Select } from "@/components/ui/select"
 import { useUpdateBorehole } from "@/features/boreholes/hooks"
 import type { Borehole, Stratum } from "@/lib/types"
 
-const SOIL_TYPES = ["토사", "매립토", "퇴적토", "풍화토", "풍화암", "연암", "리핑암", "경암", "보통암", "발파암"]
+const SOIL_TYPES = ["토사", "풍화암", "연암", "보통암", "경암"]
 
 interface Props {
   borehole: Borehole
   onClose: () => void
+  onCancel?: () => void
+  onPreviewChange?: (borehole: Borehole) => void
+  onSaved?: (borehole: Borehole) => void
 }
 
 type DraftStratum = Omit<Stratum, "id">
 
-export default function BoreholeEditorPanel({ borehole, onClose }: Props) {
+export default function BoreholeEditorPanel({ borehole, onClose, onCancel, onPreviewChange, onSaved }: Props) {
   const update = useUpdateBorehole(borehole.id)
 
   const [lat, setLat] = useState(String(borehole.latitude))
@@ -40,27 +43,54 @@ export default function BoreholeEditorPanel({ borehole, onClose }: Props) {
   }
 
   function updateStratum(i: number, field: keyof DraftStratum, value: string | number) {
-    setStrata(strata.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)))
+    setStrata(strata.map((s, idx) => {
+      if (idx === i) return { ...s, [field]: value }
+      if (field === "depth_bottom" && idx === i + 1) return { ...s, depth_top: Number(value) }
+      if (field === "depth_top" && idx === i - 1) return { ...s, depth_bottom: Number(value) }
+      return s
+    }))
   }
 
-  async function handleSave() {
+  function buildPreviewBorehole(): Borehole {
     const latitude = parseFloat(lat)
     const longitude = parseFloat(lng)
     const elevation = elev ? parseFloat(elev) : undefined
+    const nextStrata = strata.map((s, i) => ({
+      ...s,
+      id: borehole.strata[i]?.id ?? -(i + 1),
+      order: i,
+    }))
 
-    await update.mutateAsync({
+    return {
+      ...borehole,
       latitude,
       longitude,
-      elevation,
+      elevation: elevation ?? null,
+      strata: nextStrata,
+    }
+  }
+
+  useEffect(() => {
+    onPreviewChange?.(buildPreviewBorehole())
+  }, [lat, lng, elev, strata])
+
+  async function handleSave() {
+    const preview = buildPreviewBorehole()
+
+    await update.mutateAsync({
+      latitude: preview.latitude,
+      longitude: preview.longitude,
+      elevation: preview.elevation ?? undefined,
       strata: strata.map((s, i) => ({ ...s, order: i })),
     })
+    onSaved?.(preview)
     onClose()
   }
 
   return (
     <div className="flex flex-col gap-4 h-full overflow-y-auto">
       <div className="grid grid-cols-3 gap-3">
-        <div className="space-y-1">
+        <div className="space-y-2">
           <Label className="text-xs">위도</Label>
           <Input value={lat} onChange={(e) => setLat(e.target.value)} className="h-8 text-xs" />
         </div>
@@ -84,24 +114,24 @@ export default function BoreholeEditorPanel({ borehole, onClose }: Props) {
 
         <div className="space-y-1">
           {strata.map((s, i) => (
-            <div key={i} className="flex gap-1 items-center">
+            <div key={i} className="flex gap-1.5 items-center">
               <Input
                 value={s.depth_top}
                 onChange={(e) => updateStratum(i, "depth_top", parseFloat(e.target.value) || 0)}
-                className="h-7 text-xs w-16"
+                className="h-9 text-xs w-16"
                 placeholder="상심도"
               />
               <span className="text-xs text-muted-foreground">~</span>
               <Input
                 value={s.depth_bottom}
                 onChange={(e) => updateStratum(i, "depth_bottom", parseFloat(e.target.value) || 0)}
-                className="h-7 text-xs w-16"
+                className="h-9 text-xs w-16"
                 placeholder="하심도"
               />
               <Select
                 value={s.soil_type}
                 onChange={(e) => updateStratum(i, "soil_type", e.target.value)}
-                className="h-7 text-xs flex-1"
+                className="h-9 text-xs flex-1"
               >
                 {SOIL_TYPES.map((t) => (
                   <option key={t} value={t}>{t}</option>
@@ -111,7 +141,7 @@ export default function BoreholeEditorPanel({ borehole, onClose }: Props) {
                 size="icon"
                 variant="ghost"
                 onClick={() => removeStratum(i)}
-                className="h-7 w-7 text-destructive hover:text-destructive"
+                className="h-9 w-8 text-destructive hover:text-destructive"
               >
                 ×
               </Button>
@@ -128,7 +158,7 @@ export default function BoreholeEditorPanel({ borehole, onClose }: Props) {
         >
           {update.isPending ? "저장 중…" : "저장"}
         </Button>
-        <Button variant="outline" onClick={onClose} className="h-8 text-xs">
+        <Button variant="outline" onClick={onCancel ?? onClose} className="h-8 text-xs">
           취소
         </Button>
       </div>

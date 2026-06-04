@@ -33,6 +33,7 @@ export interface Stratum {
   n_value?: number | null   // 표준관입시험 N치
   uscs_code?: string | null // USCS 분류 (선택)
   raw_text?: string | null  // 정규화 전 원본 문자열
+  strata_group?: StrataGroup | "unknown" | string | null
 }
 
 // ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ export default function Navbar({ active }: Props) {
   return (
     <header className="h-12 border-b border-border bg-card px-4 flex items-center justify-between shrink-0">
       <a href="/" className="flex items-center gap-2">
-        <div className="h-6 w-6 rounded bg-gradient-to-br from-sky-400 to-indigo-500" />
+        <div className="h-6 w-6 rounded bg-stone-400" />
         <span className="text-sm font-semibold">GeoBIM Stratum</span>
       </a>
 

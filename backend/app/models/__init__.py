@@ -194,6 +194,8 @@ class Borehole(Base, TimestampMixin):
     source_crs: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # 원본 파일 경로 (또는 외부 식별자)
     source_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # 보완 시추공 여부 (False=기존 원본, True=사후 추가 신규)
+    is_supplementary: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     # 관계
     project: Mapped[Project] = relationship(back_populates="boreholes")
@@ -208,10 +210,11 @@ class Borehole(Base, TimestampMixin):
 class Stratum(Base, TimestampMixin):
     """시추공 1개 안의 지층 1개 레이어.
 
-    soil_type 은 4대 대분류로 정규화 (PDF_Convert 의 정규화 함수 통과 후):
+    soil_type 은 5대 대분류로 정규화 (PDF_Convert 의 정규화 함수 통과 후):
       - 토사 (soil)
       - 풍화암 (weathered_rock)
       - 연암 (soft_rock)
+      - 보통암 (normal_rock)
       - 경암 (hard_rock)
     """
 
@@ -303,6 +306,8 @@ class PdfExtractionJob(Base, TimestampMixin):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Celery task id (취소/재시도용)
     celery_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 보완 시추공 여부 — upload 연동 모드에서 True로 세팅
+    is_supplementary: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     # 관계
     project: Mapped[Project] = relationship(back_populates="extraction_jobs")

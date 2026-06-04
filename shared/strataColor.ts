@@ -5,12 +5,13 @@
 //   토사    #8B7355  갈색
 //   풍화암  #C4A57B  베이지
 //   연암    #6B8E5A  올리브 녹색
-//   경암    #3D3D3D  진회색 (보통암 통합)
+//   보통암  #5F6552  짙은 올리브 회색
+//   경암    #3D3D3D  진회색
 //   미분류  #B4B4B4  회색
 //
 // 변경 이력
 //   2026-05-19  색상 → 지질 톤으로 교체, normalizeStrataGroup 추가
-//   2026-05-20  moderate_rock 완전 제거 → "보통암" 포함 모두 hard_rock 통합
+//   2026-06-01  보통암을 normal_rock 으로 분리하여 5단계 지층 기준 적용
 // =============================================================================
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,7 @@ export type StrataGroup =
   | "soil"
   | "weathered_rock"
   | "soft_rock"
+  | "normal_rock"
   | "hard_rock"
   | "unknown"
 
@@ -29,7 +31,8 @@ export type StrataGroup =
 export const COLOR_SOIL      = "#8B7355"   // 토사
 export const COLOR_WEATHERED = "#C4A57B"   // 풍화암
 export const COLOR_SOFT      = "#6B8E5A"   // 연암
-export const COLOR_HARD      = "#3D3D3D"   // 경암 (보통암 포함)
+export const COLOR_NORMAL    = "#5F6552"   // 보통암
+export const COLOR_HARD      = "#3D3D3D"   // 경암
 export const COLOR_FALLBACK  = "#B4B4B4"   // 미분류
 
 // ---------------------------------------------------------------------------
@@ -39,6 +42,7 @@ export const STRATA_RGB: Record<StrataGroup, [number, number, number]> = {
   soil:          [139, 115,  85],
   weathered_rock:[196, 165, 123],
   soft_rock:     [107, 142,  90],
+  normal_rock:   [ 95, 101,  82],
   hard_rock:     [ 61,  61,  61],
   unknown:       [180, 180, 180],
 }
@@ -47,7 +51,7 @@ export const STRATA_RGB: Record<StrataGroup, [number, number, number]> = {
 // 동의어 맵 — 원본 텍스트(정제 후) → StrataGroup
 //
 // 완전 일치 우선, 이후 부분 일치 fallback (normalizeStrataGroup 내부 사용)
-// 보통암 · 발파암 · 극경암 모두 hard_rock 으로 통합 (KH_Geo 기준)
+// 보통암은 normal_rock 으로 분리하고 발파암 · 극경암은 hard_rock 으로 통합
 // ---------------------------------------------------------------------------
 const STRATA_SYNONYMS: Record<string, StrataGroup> = {
   // 토사 계열
@@ -70,8 +74,10 @@ const STRATA_SYNONYMS: Record<string, StrataGroup> = {
   "연암":       "soft_rock",
   "리핑암":     "soft_rock",
 
-  // 경암 (보통암·발파암·극경암 통합)
-  "보통암":     "hard_rock",
+  // 보통암
+  "보통암":     "normal_rock",
+
+  // 경암
   "경암":       "hard_rock",
   "발파암":     "hard_rock",
   "극경암":     "hard_rock",
@@ -87,7 +93,7 @@ export function normalizeStrataGroup(raw: string | null | undefined): StrataGrou
   if (!raw) return "unknown"
 
   const rawTrimmed = raw.trim().toLowerCase()
-  if (["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"].includes(rawTrimmed)) {
+  if (["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"].includes(rawTrimmed)) {
     return rawTrimmed as StrataGroup
   }
 
@@ -124,6 +130,7 @@ export function getStrataColor(soilType: string): string {
     case "soil":           return COLOR_SOIL
     case "weathered_rock": return COLOR_WEATHERED
     case "soft_rock":      return COLOR_SOFT
+    case "normal_rock":    return COLOR_NORMAL
     case "hard_rock":      return COLOR_HARD
     default:               return COLOR_FALLBACK
   }
@@ -157,6 +164,7 @@ export const STRATA_LEGEND: StrataLegendEntry[] = [
   { group: "soil",           label: "토사",         color: COLOR_SOIL,      rgb: STRATA_RGB.soil },
   { group: "weathered_rock", label: "풍화암",       color: COLOR_WEATHERED, rgb: STRATA_RGB.weathered_rock },
   { group: "soft_rock",      label: "연암",         color: COLOR_SOFT,      rgb: STRATA_RGB.soft_rock },
+  { group: "normal_rock",    label: "보통암",       color: COLOR_NORMAL,    rgb: STRATA_RGB.normal_rock },
   { group: "hard_rock",      label: "경암",         color: COLOR_HARD,      rgb: STRATA_RGB.hard_rock },
   { group: "unknown",        label: "미분류",       color: COLOR_FALLBACK,  rgb: STRATA_RGB.unknown },
 ]

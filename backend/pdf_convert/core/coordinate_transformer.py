@@ -292,6 +292,7 @@ def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
     except Exception:
         return '', '', '', '', source_crs or 'UNKNOWN'
 
+    source_crs = _normalize_source_crs(source_crs, x, y)
     lon_wgs84 = lat_wgs84 = None
     final_epsg = source_crs or 'UNKNOWN'
 
@@ -325,8 +326,8 @@ def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
 
     # --- CRS 미확정: Northing 수치로 추정 ---
     elif source_crs is None and max(x, y) > 100000:
-        northing_val = max(x, y)
-        inferred = 'EPSG:5186' if northing_val > 550000 else 'EPSG:5181'
+        northing_val, _easting_val = _split_korean_tm_xy(x, y)
+        inferred = 'EPSG:5186' if northing_val < 300000 or northing_val > 550000 else 'EPSG:5181'
         if 480000 <= northing_val <= 550000:
             logger.warning(f'[Ambiguous FN: {borehole_id}] Northing={northing_val:.0f} — {inferred} 추정')
         params = _PRESETS[inferred]
@@ -359,3 +360,61 @@ def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
         lon_wgs84 = lat_wgs84 = ''
 
     return lon_wgs84, lat_wgs84, tm_x, tm_y, final_epsg
+
+
+def _normalize_source_crs(source_crs, x=None, y=None):
+    if source_crs is None:
+        return None
+
+    text = str(source_crs).strip()
+    if not text or text.upper() in {'N/A', 'UNKNOWN', 'NONE', 'NULL'}:
+        return None
+
+    upper = text.upper().replace(" ", "")
+    epsg_match = re.search(r'EPSG[:\s-]*(51(?:7[456]|8[1367]))', upper)
+    if epsg_match:
+        return f"EPSG:{epsg_match.group(1)}"
+    bare_epsg_match = re.search(r'\b(51(?:7[456]|8[1367]))\b', upper)
+    if bare_epsg_match:
+        return f"EPSG:{bare_epsg_match.group(1)}"
+    if 'WGS84' in upper or 'WGS-84' in upper or '경위도' in text:
+        return 'WGS84'
+
+    is_grs80 = 'GRS80' in upper or 'GRS-80' in upper or '한국측지계2000' in text
+    is_bessel = 'BESSEL' in upper or '베셀' in text
+    if not is_grs80 and not is_bessel:
+        return text
+
+    east_origin = '동부' in text
+    west_origin = '서부' in text
+    false_600k = bool(re.search(r'60만|600,?000', text))
+    false_500k = bool(re.search(r'50만|500,?000', text))
+
+    if is_bessel:
+        if east_origin:
+            return 'EPSG:5176'
+        if west_origin:
+            return 'EPSG:5175'
+        return 'EPSG:5174'
+
+    if false_600k:
+        return 'EPSG:5187' if east_origin else 'EPSG:5186'
+    if false_500k:
+        return 'EPSG:5183' if east_origin else 'EPSG:5181'
+
+    if x is not None and y is not None:
+        northing_val, _easting_val = _split_korean_tm_xy(x, y)
+        return 'EPSG:5187' if east_origin and northing_val < 300000 else 'EPSG:5186'
+
+    return 'EPSG:5186'
+
+
+def _split_korean_tm_xy(x, y):
+    """Return (X/Northing, Y/Easting) for Korean boring logs."""
+    x_abs = abs(float(x))
+    y_abs = abs(float(y))
+    if 100000 <= x_abs <= 300000 and y_abs >= 300000:
+        return x_abs, y_abs
+    if 100000 <= y_abs <= 300000 and x_abs >= 300000:
+        return y_abs, x_abs
+    return (x_abs, y_abs) if x_abs < y_abs else (y_abs, x_abs)

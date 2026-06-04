@@ -137,13 +137,23 @@ async def main() -> None:
                 bh_id = borehole.id
 
                 strata_data = bdata.get("strata", [])
+                seen_strata = set()
                 for sdata in strata_data:
                     raw_type = sdata.get("soil_type", "Unknown")
                     mapped_type = map_soil_type(raw_type)
+                    dt = sdata.get("depth_top", 0.0)
+                    db = sdata.get("depth_bottom", 0.0)
+                    
+                    # 지층 유니크 제약조건 충돌 방지를 위한 중복 스킵 처리
+                    key = (bh_id, dt, db, mapped_type)
+                    if key in seen_strata:
+                        continue
+                    seen_strata.add(key)
+                    
                     stratum = Stratum(
                         borehole_id=bh_id,
-                        depth_top=sdata.get("depth_top", 0.0),
-                        depth_bottom=sdata.get("depth_bottom", 0.0),
+                        depth_top=dt,
+                        depth_bottom=db,
                         soil_type=mapped_type,
                         raw_text=raw_type,
                     )

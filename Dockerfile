@@ -38,6 +38,7 @@ RUN pip install --upgrade pip \
     "email-validator>=2.0" \
     "dnspython>=2.0" \
     "python-jose[cryptography]>=3.3" \
+    "bcrypt==3.2.2" \
     "passlib[bcrypt]>=1.7" \
     "celery[redis]>=5.4" \
     "redis>=5.0" \
@@ -45,7 +46,10 @@ RUN pip install --upgrade pip \
     "httpx>=0.27" \
     "numpy>=1.26" \
     "scipy>=1.12" \
-    "pyproj>=3.6"
+    "pyproj>=3.6" \
+    "opendataloader-pdf>=0.0.0" \
+    "pillow>=10.0" \
+    "pytesseract>=0.3.13"
 
 # ── 2. runtime ──────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -56,6 +60,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     libgeos-c1v5 \
+    openjdk-21-jre \
+    tesseract-ocr \
+    tesseract-ocr-kor \
+    tesseract-ocr-eng \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

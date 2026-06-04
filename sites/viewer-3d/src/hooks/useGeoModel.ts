@@ -11,6 +11,7 @@ const LAYER_COLOR: Record<string, number> = {
   soil: 0x8b7355,
   weathered_rock: 0xc4a57b,
   soft_rock: 0x6b8e5a,
+  normal_rock: 0x5f6552,
   hard_rock: 0x3d3d3d,
   unknown: 0xb4b4b4,
 }
@@ -23,13 +24,13 @@ export interface GeoModelSettings {
   showColumns: boolean
   showDrape: boolean
   renderMode: "smooth" | "voxel"
-  selectedBh: number | null
-  setSelectedBh: (id: number | null) => void
+  selectedBh: string | null
+  setSelectedBh: (id: string | null) => void
   setStatus: (msg: string) => void
-  bhPosRef: RefObject<Record<number, { x: number; y: number; z: number }>>
+  bhPosRef: RefObject<Record<string, { x: number; y: number; z: number }>>
 }
 
-const LAYER_STACK = ["soil", "weathered_rock", "soft_rock", "hard_rock", "unknown"]
+const LAYER_STACK = ["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"]
 const LAYER_SETS: Record<GeoModelSettings["basemap"], string[]> = {
   Base: ["Base"],
   Satellite: ["Satellite"],
@@ -44,6 +45,7 @@ export function useGeoModel(
   bbox: number[] | null,
   polygon: { lng: number; lat: number }[] | null,
   settings: GeoModelSettings,
+  containerRef: RefObject<HTMLDivElement | null>,
 ) {
   const dimsRef = useRef({ boxW: 2, boxD: 2, lngWidthM: 1, latWidthM: 1, mScale: 1 })
   const smoothMeshRef = useRef<Record<string, THREE.Mesh>>({})
@@ -205,7 +207,7 @@ export function useGeoModel(
     const worker = new Worker(new URL("../workers/geoWorker.ts", import.meta.url), { type: "module" })
     workerRef.current = worker
 
-    const N = 48
+    const N = 144
     worker.postMessage({
       boreholes,
       bbox,
@@ -257,7 +259,7 @@ export function useGeoModel(
       })
       drapeMatRef.current = drapeMat
       const drape = new THREE.Mesh(drapeGeo, drapeMat)
-      drape.position.y += 0.02
+      drape.position.y += 0.002
       drape.visible = showDrapeRef.current
       stratumGroup.add(drape)
       drapeRef.current = drape
@@ -287,15 +289,29 @@ export function useGeoModel(
 
       const smoothMeshes: Record<string, THREE.Mesh> = {}
       for (const [type, data] of Object.entries(smoothMeshData)) {
-        const { positions, normals } = data as any
+        const { positions, normals, indices } = data as any
         const geo = new THREE.BufferGeometry()
         geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3))
-        geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3))
+        
+        if (indices) {
+          geo.setIndex(new THREE.BufferAttribute(indices, 1))
+        } else if (normals) {
+          geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3))
+        }
         geo.computeVertexNormals()
+
+        // 지층 퇴적 순서(s)에 따라 계단식 polygonOffset을 부여하여 겹치는 구역의 Z-Fighting을 원천 차단
+        const s = LAYER_STACK.indexOf(type as any)
         const mat = new THREE.MeshStandardMaterial({
           color: LAYER_COLOR[type] ?? LAYER_COLOR.unknown,
           roughness: 0.92,
           side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.68,
+          depthWrite: false,
+          polygonOffset: true,
+          polygonOffsetFactor: (s >= 0 ? s + 1 : 1) * 1.5,
+          polygonOffsetUnits: (s >= 0 ? s + 1 : 1) * 1.5,
         })
         const mesh = new THREE.Mesh(geo, mat)
         mesh.userData.layerType = type
@@ -330,17 +346,41 @@ export function useGeoModel(
 
       const colRadius = Math.max(boxW, boxD) * 0.003
       const bhGroup = new THREE.Group()
-      const posMap: Record<number, { x: number; y: number; z: number }> = {}
+      const posMap: Record<string, { x: number; y: number; z: number }> = {}
       for (const b of boreholes) {
         if (!Number.isFinite(b.longitude) || !Number.isFinite(b.latitude) || !Number.isFinite(b.elevation)) continue
         const bx = lngToX(b.longitude)
         const bz = latToZ(b.latitude)
-        posMap[b.id] = { x: bx, y: b.elevation * mScale * verticalExagRef.current, z: bz }
+
+        // 쌍선형 보간(Bilinear Interpolation)을 통해 시추공 위치의 정밀 지표면 고도(surfElev) 계산
+        const [minLng, minLat, maxLng, maxLat] = bbox
+        const pctLng = (b.longitude - minLng) / (maxLng - minLng)
+        const pctLat = (b.latitude - minLat) / (maxLat - minLat)
+        
+        const fi = pctLng * (N - 1)
+        const fj = pctLat * (N - 1)
+        
+        const i0 = Math.max(0, Math.min(N - 1, Math.floor(fi)))
+        const i1 = Math.max(0, Math.min(N - 1, Math.ceil(fi)))
+        const j0 = Math.max(0, Math.min(N - 1, Math.floor(fj)))
+        const j1 = Math.max(0, Math.min(N - 1, Math.ceil(fj)))
+        
+        const s = fi - i0
+        const t = fj - j0
+        
+        const elev00 = elevGrid[j0][i0]
+        const elev10 = elevGrid[j0][i1]
+        const elev01 = elevGrid[j1][i0]
+        const elev11 = elevGrid[j1][i1]
+        
+        const surfElev = (1 - s) * (1 - t) * elev00 + s * (1 - t) * elev10 + (1 - s) * t * elev01 + s * t * elev11
+
+        posMap[b.id] = { x: bx, y: surfElev * mScale * verticalExagRef.current, z: bz }
 
         for (const seg of b.strata || []) {
           if (!Number.isFinite(seg.depth_top) || !Number.isFinite(seg.depth_bottom)) continue
-          const yTop = (b.elevation - seg.depth_top) * mScale
-          const yBot = (b.elevation - seg.depth_bottom) * mScale
+          const yTop = (surfElev - seg.depth_top) * mScale
+          const yBot = (surfElev - seg.depth_bottom) * mScale
           const h = Math.max(yTop - yBot, 1e-5)
           const geo = new THREE.CylinderGeometry(colRadius, colRadius, h, 10)
           const layerType = seg.strata_group ?? "unknown"
@@ -351,6 +391,7 @@ export function useGeoModel(
           const cyl = new THREE.Mesh(geo, mat)
           cyl.position.set(bx, (yTop + yBot) / 2, bz)
           cyl.userData.layerType = layerType
+          cyl.userData.bhId = b.id  // 클릭 감지용 시추공 ID 저장
           bhGroup.add(cyl)
         }
       }
@@ -423,10 +464,34 @@ export function useGeoModel(
   useEffect(() => {
     const marker = markerRef.current
     if (!marker || !bbox) return
+
+    // ── 지층 투명도: 선택 시 0.25, 해제 시 불투명 복원 ──────────────────
+    const allLayerMeshes = [
+      ...Object.values(smoothMeshRef.current),
+      ...Object.values(voxelMeshRef.current),
+    ]
     if (selectedBh === null) {
       marker.visible = false
+      // 선택 해제 → 지층 불투명 복원
+      for (const mesh of allLayerMeshes) {
+        const mat = mesh.material as THREE.MeshStandardMaterial
+        mat.transparent = true
+        mat.opacity = 0.68
+        mat.depthWrite = false
+        mat.needsUpdate = true
+      }
       return
     }
+
+    // 선택됨 → 지층 반투명 처리 (opacity 0.45: 어두운 배경에서도 지층 형태 인식 가능)
+    for (const mesh of allLayerMeshes) {
+      const mat = mesh.material as THREE.MeshStandardMaterial
+      mat.transparent = true
+      mat.opacity = 0.36
+      mat.depthWrite = false
+      mat.needsUpdate = true
+    }
+
     const b = boreholes.find((h) => h.id === selectedBh)
     if (!b) {
       marker.visible = false
@@ -435,12 +500,13 @@ export function useGeoModel(
     const { boxW, boxD, mScale } = dimsRef.current
     const bx = -boxW / 2 + (boxW * (b.longitude - bbox[0])) / (bbox[2] - bbox[0])
     const bz = boxD / 2 - (boxD * (b.latitude - bbox[1])) / (bbox[3] - bbox[1])
-    const by = (b.elevation || 0) * mScale * verticalExag
+    const p = bhPosRef.current?.[b.id]
+    const by = p ? p.y : (b.elevation || 0) * mScale * verticalExag
     marker.position.set(bx, by + 0.05, bz)
     marker.visible = true
   }, [selectedBh, boreholes, bbox, verticalExag])
 
-  const focusBorehole = (id: number) => {
+  const focusBorehole = useCallback((id: string) => {
     const p = bhPosRef.current?.[id]
     const cam = cameraRef.current
     const ctr = controlsRef.current
@@ -463,7 +529,59 @@ export function useGeoModel(
       if (t < 1) requestAnimationFrame(step)
     }
     step()
-  }
+  }, [setSelectedBh])
+
+  // ── 3D 시추공 클릭 → 테이블 선택 동기화 ─────────────────────────────────
+  // Raycaster로 클릭된 실린더의 userData.bhId를 읽어 focusBorehole 호출
+  // 드래그(OrbitControls 회전)와 클릭을 구분하기 위해 pointerdown 위치 추적
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const raycaster = new THREE.Raycaster()
+    let clickStart = { x: 0, y: 0 }
+
+    const onPointerDown = (e: PointerEvent) => {
+      clickStart = { x: e.clientX, y: e.clientY }
+    }
+
+    const onClick = (e: MouseEvent) => {
+      // 3px 이상 이동했으면 드래그로 간주 → 클릭 무시
+      const dx = e.clientX - clickStart.x
+      const dy = e.clientY - clickStart.y
+      if (dx * dx + dy * dy > 9) return
+
+      const cam = cameraRef.current
+      const bhGroup = bhGroupRef.current
+      if (!cam || !bhGroup || !bhGroup.visible) return
+
+      const rect = container.getBoundingClientRect()
+      const x = ((e.clientX - rect.left) / rect.width)  * 2 - 1
+      const y = -((e.clientY - rect.top)  / rect.height) * 2 + 1
+
+      raycaster.setFromCamera(new THREE.Vector2(x, y), cam)
+
+      // bhGroup의 자식(실린더)만 대상으로 교차 검사
+      const hits = raycaster.intersectObjects(bhGroup.children, false)
+      if (hits.length > 0) {
+        // userData.bhId는 b.id에서 복사 — 런타임에 string일 수 있음
+        // Number() 변환으로 "10619"(string) → 10619(number) 처리
+        const bhIdRaw = hits[0].object.userData.bhId
+        const bhId = String(bhIdRaw)
+        if (bhId) focusBorehole(bhId)
+      } else {
+        // 빈 공간 클릭 → 선택 해제 (지층 투명도 복원)
+        setSelectedBh(null)
+      }
+    }
+
+    container.addEventListener("pointerdown", onPointerDown)
+    container.addEventListener("click", onClick)
+    return () => {
+      container.removeEventListener("pointerdown", onPointerDown)
+      container.removeEventListener("click", onClick)
+    }
+  }, [containerRef, cameraRef, focusBorehole, setSelectedBh])
 
   return {
     focusBorehole,

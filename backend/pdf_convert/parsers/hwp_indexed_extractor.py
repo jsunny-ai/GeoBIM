@@ -247,20 +247,20 @@ def parse_coordinates(coord_text):
     text = clean_cell_text(coord_text)
     
     # X(N) 패턴
-    x_match = re.search(r'X\s*\(?N?\)?\s*[:：]\s*([\d.]+)', text, re.IGNORECASE)
+    x_match = re.search(r'X\s*[\(\[]?\s*N?\s*[\)\]]?\s*[:：]?\s*([\-+\d,.]+)', text, re.IGNORECASE)
     if x_match:
         lon = clean_float(x_match.group(1))
     
     # Y(E) 패턴
-    y_match = re.search(r'Y\s*\(?E?\)?\s*[:：]\s*([\d.]+)', text, re.IGNORECASE)
+    y_match = re.search(r'Y\s*[\(\[]?\s*E?\s*[\)\]]?\s*[:：]?\s*([\-+\d,.]+)', text, re.IGNORECASE)
     if y_match:
         lat = clean_float(y_match.group(1))
     
     # 패턴 매칭 실패 시 숫자 2개 직접 추출 시도
     if lon is None or lat is None:
-        nums = re.findall(r'(\d{5,7}\.\d{2,4})', text)
+        nums = re.findall(r'([\-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[\-+]?\d{5,7}(?:\.\d+)?)', text)
         if len(nums) >= 2:
-            vals = sorted([float(n) for n in nums], reverse=True)
+            vals = sorted([float(n.replace(",", "")) for n in nums], reverse=True)
             if lon is None:
                 lon = vals[0]
             if lat is None:

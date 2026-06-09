@@ -6,6 +6,7 @@ import Navbar from "@/components/Navbar"
 import { useProjects } from "@/features/projects/hooks"
 import { api } from "@/lib/api"
 import type { Project } from "@/lib/types"
+import { VIEWER_3D_URL, MAP_URL } from "@shared/urls"
 
 function fallbackBoreholeCount(project: Project) {
   const selectedIds = project.bbox?.borehole_ids
@@ -64,14 +65,14 @@ function ProjectCard({
 
         <div className="grid grid-cols-3 gap-1.5 mt-2 pt-3 border-t border-border/40">
           <a
-            href={`http://localhost:5173/?projectId=${project.id}`}
+            href={`${VIEWER_3D_URL}/?projectId=${project.id}`}
             className="flex flex-col items-center justify-center gap-1 py-1.5 rounded bg-stone-200 hover:bg-stone-300 text-stone-800 border border-stone-300 transition-all text-[10px] font-semibold"
           >
             <Layers className="h-3.5 w-3.5" />
             3D 분석
           </a>
           <a
-            href={`http://localhost:5172/?project_id=${project.id}`}
+            href={`${MAP_URL}/?project_id=${project.id}`}
             className="flex flex-col items-center justify-center gap-1 py-1.5 rounded bg-stone-200 hover:bg-stone-300 text-stone-800 border border-stone-300 transition-all text-[10px] font-semibold"
           >
             <Map className="h-3.5 w-3.5" />

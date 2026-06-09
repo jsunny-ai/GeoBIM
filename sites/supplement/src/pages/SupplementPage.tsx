@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { parseUrlParams, fetchBoreholes } from "@/lib/parseUrl"
 import type { Borehole, ExportOptions, InterpolationMode } from "@/lib/types"
+import { MAP_URL, VIEWER_3D_URL } from "@shared/urls"
 import ExistingBoreholeList from "@/components/ExistingBoreholeList"
 import NewBoreholeForm from "@/components/NewBoreholeForm"
 import ExportPanel from "@/components/ExportPanel"
@@ -144,7 +145,7 @@ export default function SupplementPage() {
         fontFamily: "'Noto Sans KR',sans-serif",
       }}>
         <p style={{ fontSize: 13, color: C.red }}>{parseError ?? "영역 정보가 없습니다."}</p>
-        <a href="http://localhost:5172/" style={{ fontSize: 12, color: C.tertiary, textDecoration: "underline" }}>
+        <a href={MAP_URL} style={{ fontSize: 12, color: C.tertiary, textDecoration: "underline" }}>
           ← 1단계 지도로 돌아가기
         </a>
       </div>
@@ -174,7 +175,7 @@ export default function SupplementPage() {
           <button
             onClick={() => {
               const params = new URLSearchParams(window.location.search)
-              window.open(`http://localhost:5173/?${params.toString()}`, "_blank")
+              window.open(`${VIEWER_3D_URL}/?${params.toString()}`, "_blank")
             }}
             style={{
               padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
@@ -184,7 +185,7 @@ export default function SupplementPage() {
             2단계 3D 뷰어로 확인 ↗
           </button>
           <button
-            onClick={() => { window.location.href = "http://localhost:5172/" }}
+            onClick={() => { window.location.href = MAP_URL }}
             style={{
               padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
               background: "rgba(232,83,58,.12)", border: `1px solid ${C.red}`, color: C.red,

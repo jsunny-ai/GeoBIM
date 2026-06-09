@@ -11,6 +11,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { login } from "@/lib/auth"
+import { PROJECTS_URL } from "@shared/urls"
 
 export default function App() {
   const [email, setEmail] = useState("")
@@ -24,7 +25,7 @@ export default function App() {
     setLoading(true)
     try {
       await login(email, password)
-      window.location.href = "http://localhost:5171/"
+      window.location.href = PROJECTS_URL
     } catch (err) {
       setError(err instanceof Error ? err.message : "로그인에 실패했습니다.")
     } finally {

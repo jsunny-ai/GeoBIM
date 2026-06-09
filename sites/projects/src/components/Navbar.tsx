@@ -1,5 +1,6 @@
 import { Map, Upload, LogOut } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { AUTH_URL, PROJECTS_URL, MAP_URL, UPLOAD_URL, API_URL } from "@shared/urls"
 
 interface Props {
   active?: "projects" | "map" | "upload"
@@ -7,12 +8,12 @@ interface Props {
 
 async function handleLogout() {
   try {
-    await fetch("http://localhost:8000/api/v1/auth/logout", {
+    await fetch(`${API_URL}/api/v1/auth/logout`, {
       method: "POST",
       credentials: "include",
     })
   } finally {
-    window.location.href = "http://localhost:5170/"
+    window.location.href = AUTH_URL
   }
 }
 
@@ -30,7 +31,7 @@ export default function Navbar({ active }: Props) {
           size="sm"
           className="h-7 text-xs"
           asChild={false}
-          onClick={() => { window.location.href = "http://localhost:5171/" }}
+          onClick={() => { window.location.href = PROJECTS_URL }}
         >
           프로젝트
         </Button>
@@ -38,7 +39,7 @@ export default function Navbar({ active }: Props) {
           variant={active === "map" ? "secondary" : "ghost"}
           size="sm"
           className="h-7 text-xs"
-          onClick={() => { window.location.href = "http://localhost:5172/" }}
+          onClick={() => { window.location.href = MAP_URL }}
         >
           <Map className="mr-1 h-3.5 w-3.5" /> 지도
         </Button>
@@ -46,7 +47,7 @@ export default function Navbar({ active }: Props) {
           variant={active === "upload" ? "secondary" : "ghost"}
           size="sm"
           className="h-7 text-xs"
-          onClick={() => { window.location.href = "http://localhost:5174/" }}
+          onClick={() => { window.location.href = UPLOAD_URL }}
         >
           <Upload className="mr-1 h-3.5 w-3.5" /> 업로드
         </Button>

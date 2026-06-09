@@ -6,6 +6,7 @@ import { useGeoModel, type GeoModelSettings } from "../hooks/useGeoModel"
 import { useThreeScene } from "../hooks/useThreeScene"
 import { parseUrlParams } from "@/lib/parseUrl"
 import type { Borehole } from "@/lib/types"
+import { MAP_URL } from "@shared/urls"
 
 const C = {
   bg: "#faf8f5",
@@ -193,7 +194,7 @@ export default function Viewer3DPage() {
             fontFamily: "'Noto Sans KR',sans-serif",
           }}>
             <p style={{ fontSize: 13, color: C.red }}>{error ?? "영역 정보가 없습니다."}</p>
-            <a href="http://localhost:5172/" style={{ fontSize: 12, color: C.tertiary, textDecoration: "underline" }}>
+            <a href={MAP_URL} style={{ fontSize: 12, color: C.tertiary, textDecoration: "underline" }}>
               1단계 지도로 돌아가기
             </a>
           </div>

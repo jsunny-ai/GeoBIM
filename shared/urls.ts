@@ -1,0 +1,7 @@
+export const AUTH_URL = import.meta.env.VITE_AUTH_URL ?? "http://localhost:5170"
+export const PROJECTS_URL = import.meta.env.VITE_PROJECTS_URL ?? "http://localhost:5171"
+export const MAP_URL = import.meta.env.VITE_MAP_URL ?? "http://localhost:5172"
+export const VIEWER_3D_URL = import.meta.env.VITE_VIEWER_3D_URL ?? "http://localhost:5173"
+export const UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL ?? "http://localhost:5174"
+export const SUPPLEMENT_URL = import.meta.env.VITE_SUPPLEMENT_URL ?? "http://localhost:5175"
+export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000"

@@ -4,6 +4,7 @@ import * as Cesium from "cesium"
 import { useCesiumMap } from "@/features/map/useCesiumMap"
 import type { Borehole, Project, BoreholeApiResponse, Stratum } from "@/lib/types"
 import { normalizeStrataGroup, getStrataColor, STRATA_LEGEND } from "@shared/strataColor"
+import { VIEWER_3D_URL } from "@shared/urls"
 
 // ── KH_Geo 색상 팔레트 ────────────────────────────────────────
 const C = {
@@ -242,7 +243,7 @@ export default function MapPage() {
       lng: Cesium.Math.toDegrees(pt.longitude),
       lat: Cesium.Math.toDegrees(pt.latitude),
     }))
-    window.location.href = `http://localhost:5173/?bbox=${bboxStr}&boreholeIds=${bhIdsStr}&polygon=${encodeURIComponent(JSON.stringify(polyDeg))}`
+    window.location.href = `${VIEWER_3D_URL}/?bbox=${bboxStr}&boreholeIds=${bhIdsStr}&polygon=${encodeURIComponent(JSON.stringify(polyDeg))}`
   }
 
   const handleClear = () => {

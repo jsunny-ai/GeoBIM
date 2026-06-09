@@ -11,12 +11,13 @@ import StratigraphyColumn from "@/components/StratigraphyColumn"
 import BoreholeEditorPanel from "@/components/BoreholeEditorPanel"
 import ManualBoreholeForm from "@/components/ManualBoreholeForm"
 import type { Borehole } from "@/lib/types"
+import { PROJECTS_URL, UPLOAD_URL } from "@shared/urls"
 
 type MainTab    = "existing" | "register"
 type RegisterTab = "pdf" | "manual"
 type FilterType  = "all" | "original" | "supplementary"
 
-const UPLOAD_BASE = "http://localhost:5174"
+const UPLOAD_BASE = UPLOAD_URL
 
 // 배지 컴포넌트
 function BoreholeTypeBadge({ isSupplementary, status }: { isSupplementary: boolean; status?: string }) {
@@ -54,7 +55,7 @@ export default function ProjectDetailPage() {
   const [editingBase, setEditingBase] = useState<Borehole | null>(null)
   const [filter, setFilter]           = useState<FilterType>("all")
 
-  const returnUrl = encodeURIComponent(`http://localhost:5171/detail/${projectId}`)
+  const returnUrl = encodeURIComponent(`${PROJECTS_URL}/detail/${projectId}`)
   const uploadUrl = `${UPLOAD_BASE}/?project_id=${projectId}&return_url=${returnUrl}`
 
   // 필터링된 목록

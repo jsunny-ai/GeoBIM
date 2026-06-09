@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { AlertTriangle, CheckCircle2, FileUp, Loader2, MapPin, Save, Trash2, UploadCloud } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { AUTH_URL, PROJECTS_URL, MAP_URL, VIEWER_3D_URL } from "@shared/urls"
 
 const API_BASE = import.meta.env.VITE_API_URL ?? ""
 
@@ -138,13 +139,13 @@ function NavBar() {
   return (
     <header className="sticky top-0 z-10 border-b border-border bg-card/80 backdrop-blur">
       <div className="mx-auto flex h-12 max-w-7xl items-center justify-between px-4">
-        <a href="http://localhost:5171/" className="text-sm font-semibold text-foreground">
+        <a href={PROJECTS_URL} className="text-sm font-semibold text-foreground">
           GeoBIM Stratum
         </a>
         <nav className="flex items-center gap-1">
           {[
-            { label: "프로젝트", href: "http://localhost:5171/" },
-            { label: "지도", href: "http://localhost:5172/" },
+            { label: "프로젝트", href: PROJECTS_URL },
+            { label: "지도", href: MAP_URL },
             { label: "업로드", href: null },
           ].map(({ label, href }) =>
             href ? (
@@ -166,7 +167,7 @@ function NavBar() {
           )}
           <button
             onClick={() => {
-              window.location.href = "http://localhost:5170/"
+              window.location.href = AUTH_URL
             }}
             className="ml-2 rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
@@ -393,7 +394,7 @@ function AutoParseTab({
                 </a>
               ) : (
                 <a
-                  href="http://localhost:5173/"
+                  href={VIEWER_3D_URL}
                   className="text-xs font-medium text-emerald-100 underline-offset-4 hover:underline"
                 >
                   3D 뷰어에서 확인

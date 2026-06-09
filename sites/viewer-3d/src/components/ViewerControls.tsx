@@ -1,4 +1,5 @@
 import React from "react"
+import { MAP_URL, SUPPLEMENT_URL } from "@shared/urls"
 
 export type Basemap = "Satellite" | "Hybrid" | "Base"
 
@@ -129,7 +130,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
 
       <button
         onClick={() => {
-          window.location.href = "http://localhost:5172/"
+          window.location.href = MAP_URL
         }}
         style={{
           width: "100%",
@@ -151,7 +152,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
       <button
         onClick={() => {
           const params = new URLSearchParams(window.location.search)
-          window.open(`http://localhost:5175/?${params.toString()}`, "_blank")
+          window.open(`${SUPPLEMENT_URL}/?${params.toString()}`, "_blank")
         }}
         style={{
           width: "100%",

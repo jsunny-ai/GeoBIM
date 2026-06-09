@@ -20,6 +20,9 @@ export default function App() {
   const lockedProjectId = urlParams.get("project_id") ? Number(urlParams.get("project_id")) : undefined
   const returnUrl = urlParams.get("return_url") ?? undefined
 
+  const [projectId, setProjectId] = useState<number | "">(lockedProjectId ?? "")
+  const [file, setFile] = useState<File | null>(null)
+
   useEffect(() => {
     if (lockedProjectId) {
       setProjects([{ id: lockedProjectId, name: `Project #${lockedProjectId}` }])
@@ -103,6 +106,10 @@ export default function App() {
             projects={projects}
             loadingProjects={loadingProjects}
             lockedProjectId={lockedProjectId}
+            projectId={projectId}
+            setProjectId={setProjectId}
+            file={file}
+            setFile={setFile}
             returnUrl={returnUrl}
             onReviewReadyChange={setAutoReviewReady}
           />
@@ -111,6 +118,10 @@ export default function App() {
             projects={projects}
             loadingProjects={loadingProjects}
             lockedProjectId={lockedProjectId}
+            projectId={projectId}
+            setProjectId={setProjectId}
+            file={file}
+            setFile={setFile}
             returnUrl={returnUrl}
             onReviewReadyChange={setManualReviewReady}
           />

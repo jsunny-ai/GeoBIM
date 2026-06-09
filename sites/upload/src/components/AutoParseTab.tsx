@@ -13,17 +13,23 @@ export function AutoParseTab({
   projects,
   loadingProjects,
   lockedProjectId,
+  projectId,
+  setProjectId,
+  file,
+  setFile,
   returnUrl,
   onReviewReadyChange,
 }: {
   projects: Project[]
   loadingProjects: boolean
   lockedProjectId?: number
+  projectId: number | ""
+  setProjectId: (id: number | "") => void
+  file: File | null
+  setFile: (file: File | null) => void
   returnUrl?: string
   onReviewReadyChange?: (ready: boolean) => void
 }) {
-  const [projectId, setProjectId] = useState<number | "">(lockedProjectId ?? "")
-  const [file, setFile] = useState<File | null>(null)
   const [job, setJob] = useState<ExtractionJob | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [saving, setSaving] = useState(false)

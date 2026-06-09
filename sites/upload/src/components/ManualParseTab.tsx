@@ -34,18 +34,24 @@ export function ManualParseTab({
   projects,
   loadingProjects,
   lockedProjectId,
+  projectId,
+  setProjectId,
+  file,
+  setFile,
   returnUrl,
   onReviewReadyChange,
 }: {
   projects: Project[]
   loadingProjects: boolean
   lockedProjectId?: number
+  projectId: number | ""
+  setProjectId: (id: number | "") => void
+  file: File | null
+  setFile: (file: File | null) => void
   returnUrl?: string
   onReviewReadyChange?: (ready: boolean) => void
 }) {
   const imageRef = useRef<HTMLImageElement>(null)
-  const [projectId, setProjectId] = useState<number | "">(lockedProjectId ?? "")
-  const [file, setFile] = useState<File | null>(null)
   const [manualJob, setManualJob] = useState<ManualUpload | null>(null)
   const [job, setJob] = useState<ExtractionJob | null>(null)
   const [pageNumber, setPageNumber] = useState(1)
@@ -222,7 +228,17 @@ export function ManualParseTab({
 
         <DropZone accept=".pdf" file={file} onFile={handleFile} hint="PDF 파일만 지원" />
 
-        <Button className="w-full gap-2" disabled={!file || submitting || Boolean(manualJob)} onClick={handleUpload}>
+        {file && !file.name.toLowerCase().endsWith(".pdf") && (
+          <p className="text-xs text-red-400 mt-1">
+            ⚠ 직접 지정 파싱은 PDF 파일만 지원합니다.
+          </p>
+        )}
+
+        <Button
+          className="w-full gap-2"
+          disabled={!file || !file.name.toLowerCase().endsWith(".pdf") || submitting || Boolean(manualJob)}
+          onClick={handleUpload}
+        >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
           직접 지정 시작
         </Button>

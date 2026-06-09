@@ -141,3 +141,13 @@ backend/proj20_all_strata.txt
 backend/project_check_results.txt
 strata_check.txt
 tmp/
+
+# Phase 1 백업 / 런처 (삭제됨)
+frontend.phase1-backup/
+_launcher/
+
+# 디버깅 잔여 파일
+backend/cookies.txt
+backend/tile.jpg
+backend/test_tile.py
+backend/run_diagnose.bat

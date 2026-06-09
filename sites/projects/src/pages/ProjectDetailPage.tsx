@@ -19,7 +19,15 @@ type FilterType  = "all" | "original" | "supplementary"
 const UPLOAD_BASE = "http://localhost:5174"
 
 // 배지 컴포넌트
-function BoreholeTypeBadge({ isSupplementary }: { isSupplementary: boolean }) {
+function BoreholeTypeBadge({ isSupplementary, status }: { isSupplementary: boolean; status?: string }) {
+  if (status?.startsWith("modified_")) {
+    return (
+      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+        수정본
+      </span>
+    )
+  }
+
   return isSupplementary ? (
     <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-stone-200 text-stone-800 border border-stone-300">
       신규
@@ -37,7 +45,7 @@ export default function ProjectDetailPage() {
   const queryClient = useQueryClient()
 
   const { data: project } = useProject(projectId)
-  const { data: boreholes, isLoading, refetch } = useBoreholes(projectId)
+  const { data: boreholes, isLoading, refetch } = useBoreholes(projectId, project)
 
   const [mainTab, setMainTab]         = useState<MainTab>("existing")
   const [registerTab, setRegisterTab] = useState<RegisterTab>("pdf")
@@ -174,7 +182,7 @@ export default function ProjectDetailPage() {
                     <div className="flex items-center justify-between gap-1">
                       <span className="font-medium truncate">{b.name}</span>
                       <div className="flex items-center gap-1 shrink-0">
-                        <BoreholeTypeBadge isSupplementary={b.is_supplementary} />
+                        <BoreholeTypeBadge isSupplementary={b.is_supplementary} status={b.data_status} />
                         <ChevronRight className="h-3 w-3 text-muted-foreground" />
                       </div>
                     </div>
@@ -395,7 +403,7 @@ export default function ProjectDetailPage() {
                                     }`}
                                   >
                                     <td className="px-3 py-3">
-                                      <BoreholeTypeBadge isSupplementary={b.is_supplementary} />
+                                      <BoreholeTypeBadge isSupplementary={b.is_supplementary} status={b.data_status} />
                                     </td>
                                     <td className="px-3 py-3 font-semibold">{b.name}</td>
                                     <td className="px-3 py-3 text-muted-foreground">{b.elevation != null ? `${b.elevation.toFixed(2)}m` : "-"}</td>
@@ -437,7 +445,7 @@ export default function ProjectDetailPage() {
                         <ArrowLeft className="h-4 w-4" />
                       </button>
                       <h2 className="text-base font-semibold">{selected.name}</h2>
-                      <BoreholeTypeBadge isSupplementary={selected.is_supplementary} />
+                      <BoreholeTypeBadge isSupplementary={selected.is_supplementary} status={selected.data_status} />
                       {selected.strata.length > 0 && <Badge variant="slate" className="text-xs">{selected.strata.length}개 지층</Badge>}
                     </div>
                     <Button size="sm" variant={editing ? "secondary" : "outline"} className="h-7 text-xs" onClick={handleToggleEditing}>
@@ -450,6 +458,7 @@ export default function ProjectDetailPage() {
                       <div className="border-t border-border/60 pt-4">
                         <BoreholeEditorPanel
                           borehole={selected}
+                          projectId={projectId}
                           onClose={() => setEditing(false)}
                           onCancel={handleCancelEditing}
                           onPreviewChange={(updated) => setSelected(updated)}

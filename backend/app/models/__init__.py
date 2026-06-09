@@ -202,6 +202,9 @@ class Borehole(Base, TimestampMixin):
     strata: Mapped[list[Stratum]] = relationship(
         back_populates="borehole", cascade="all, delete-orphan"
     )
+    project_overrides: Mapped[list[ProjectBoreholeOverride]] = relationship(
+        back_populates="source_borehole", cascade="all, delete-orphan"
+    )
 
 
 # ============================================================================
@@ -242,6 +245,32 @@ class Stratum(Base, TimestampMixin):
 # ============================================================================
 # PdfTemplate (박스 추출 템플릿)
 # ============================================================================
+class ProjectBoreholeOverride(Base, TimestampMixin):
+    __tablename__ = "project_borehole_overrides"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_borehole_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("boreholes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft", index=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+
+    project: Mapped[Project] = relationship()
+    source_borehole: Mapped[Borehole] = relationship(back_populates="project_overrides")
+
+
 class PdfTemplate(Base, TimestampMixin):
     """PDF 박스 추출 템플릿.
 
@@ -328,6 +357,7 @@ __all__ = [
     "ProjectMember",
     "Borehole",
     "Stratum",
+    "ProjectBoreholeOverride",
     "PdfTemplate",
     "PdfExtractionJob",
 ]

@@ -10,6 +10,7 @@ const SOIL_TYPES = ["토사", "풍화암", "연암", "보통암", "경암"]
 
 interface Props {
   borehole: Borehole
+  projectId: number
   onClose: () => void
   onCancel?: () => void
   onPreviewChange?: (borehole: Borehole) => void
@@ -18,8 +19,8 @@ interface Props {
 
 type DraftStratum = Omit<Stratum, "id">
 
-export default function BoreholeEditorPanel({ borehole, onClose, onCancel, onPreviewChange, onSaved }: Props) {
-  const update = useUpdateBorehole(borehole.id)
+export default function BoreholeEditorPanel({ borehole, projectId, onClose, onCancel, onPreviewChange, onSaved }: Props) {
+  const update = useUpdateBorehole(borehole.id, projectId, borehole.is_supplementary)
 
   const [lat, setLat] = useState(String(borehole.latitude))
   const [lng, setLng] = useState(String(borehole.longitude))

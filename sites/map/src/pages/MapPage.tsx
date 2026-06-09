@@ -93,6 +93,7 @@ export default function MapPage() {
   // ── Cesium 훅 ────────────────────────────────────────────
   const handleBoreholeClick = useCallback(async (bh: Borehole) => {
     setSelectedBorehole(bh)   // 즉시 패널 표시 (기본 정보)
+    if (bh.data_status?.startsWith("modified_")) return
     setBhLoading(true)
     try {
       const res = await fetch(`/api/v1/boreholes/${bh.id}`)
@@ -134,6 +135,15 @@ export default function MapPage() {
         setCurrentProjectId(proj.id)
         setProjectName(proj.name)
         setProjectDesc(proj.description || "")
+
+        const effectiveRes = await fetch(`/api/v1/projects/${projectIdStr}/boreholes/effective`)
+        if (effectiveRes.ok) {
+          const effectiveBody = await effectiveRes.json()
+          if (!cancelled && Array.isArray(effectiveBody.boreholes)) {
+            setAllBoreholes(effectiveBody.boreholes)
+            setStatus(`프로젝트 기준 · 시추공 ${effectiveBody.boreholes.length.toLocaleString()}개`)
+          }
+        }
 
         if (proj.bbox && typeof proj.bbox === "object") {
           const { bbox: rectBbox, polygon: rectPoly, borehole_ids: bhIds } = proj.bbox

@@ -7,6 +7,7 @@ export function useBoreholeData(
   bbox: number[] | null,
   polygon: { lng: number; lat: number }[] | null,
   boreholeIds: number[],
+  projectId?: number | null,
 ) {
   const [boreholes, setBoreholes] = useState<Borehole[]>([])
   const [fetchStatus, setFetchStatus] = useState<"idle" | "loading" | "done" | "error">("idle")
@@ -20,7 +21,16 @@ export function useBoreholeData(
     setFetchStatus("loading")
     setFetchErr(null)
 
-    fetchBoreholesByBbox(bbox as [number, number, number, number], polygon || undefined, boreholeIds)
+    const boreholePromise = projectId
+      ? fetch(`/api/v1/projects/${projectId}/boreholes/effective`)
+          .then(async (res) => {
+            if (!res.ok) throw new Error(`프로젝트 시추공 API 오류: HTTP ${res.status}`)
+            const data = await res.json()
+            return data.boreholes ?? []
+          })
+      : fetchBoreholesByBbox(bbox as [number, number, number, number], polygon || undefined, boreholeIds)
+
+    boreholePromise
       .then(async (bhs) => {
         if (cancelled) return
 
@@ -74,7 +84,7 @@ export function useBoreholeData(
     return () => {
       cancelled = true
     }
-  }, [bbox, polygon, boreholeIds])
+  }, [bbox, polygon, boreholeIds, projectId])
 
   return {
     boreholes,

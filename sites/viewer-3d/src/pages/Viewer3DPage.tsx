@@ -52,6 +52,7 @@ export default function Viewer3DPage() {
   const [bbox, setBbox] = useState<[number, number, number, number] | null>(null)
   const [polygon, setPolygon] = useState<any[] | null>(null)
   const [boreholeIds, setBoreholeIds] = useState<number[]>([])
+  const [projectId, setProjectId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoadingProject, setIsLoadingProject] = useState(true)
 
@@ -73,7 +74,7 @@ export default function Viewer3DPage() {
   })
 
   const { sceneRef, cameraRef, controlsRef } = useThreeScene(containerRef)
-  const { boreholes, fetchStatus, fetchErr } = useBoreholeData(bbox, polygon, boreholeIds)
+  const { boreholes, fetchStatus, fetchErr } = useBoreholeData(bbox, polygon, boreholeIds, projectId)
   const [bhState, setBhState] = useState<(Borehole & { dem_elevation?: number })[]>([])
 
   useEffect(() => {
@@ -81,6 +82,7 @@ export default function Viewer3DPage() {
     const projId = sp.get("projectId") || sp.get("project_id")
 
     if (projId) {
+      setProjectId(Number(projId))
       setIsLoadingProject(true)
       ;(async () => {
         try {
@@ -103,6 +105,7 @@ export default function Viewer3DPage() {
         }
       })()
     } else {
+      setProjectId(null)
       setIsLoadingProject(false)
       const parsed = parseUrlParams()
       if (parsed.error) {

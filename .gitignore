@@ -140,3 +140,4 @@ backend/all_projects_count.txt
 backend/proj20_all_strata.txt
 backend/project_check_results.txt
 strata_check.txt
+tmp/

@@ -7,10 +7,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_db
-from app.models import Borehole, Project, User
+from app.models import Borehole, Project, ProjectBoreholeOverride, Stratum, User
 from app.schemas import ProjectRead, ProjectCreate
+from app.services.normalization import normalize_strata_group
 
 router = APIRouter()
 
@@ -19,6 +21,88 @@ def _project_with_count(project: Project, borehole_count: int) -> dict:
     data = ProjectRead.model_validate(project).model_dump()
     data["borehole_count"] = borehole_count
     return data
+
+
+def _loc_to_lng_lat(loc_json: str | None) -> tuple[float, float]:
+    import json
+
+    if not loc_json:
+        return 0.0, 0.0
+    coords = json.loads(loc_json)["coordinates"]
+    return coords[0], coords[1]
+
+
+def _stratum_dict(s: Stratum) -> dict:
+    return {
+        "id": s.id,
+        "borehole_id": s.borehole_id,
+        "depth_top": s.depth_top,
+        "depth_bottom": s.depth_bottom,
+        "soil_type": s.soil_type,
+        "strata_group": normalize_strata_group(s.soil_type),
+        "raw_text": s.raw_text,
+        "n_value": s.n_value,
+        "uscs_code": s.uscs_code,
+    }
+
+
+def _borehole_dict(b: Borehole, loc_json: str | None) -> dict:
+    lng, lat = _loc_to_lng_lat(loc_json)
+    return {
+        "id": b.id,
+        "project_id": b.project_id,
+        "name": b.name,
+        "longitude": lng,
+        "latitude": lat,
+        "elevation": b.elevation,
+        "source_crs": b.source_crs,
+        "source_file": b.source_file,
+        "is_supplementary": b.is_supplementary,
+        "data_status": "supplementary" if b.is_supplementary else "original",
+        "source_borehole_id": None,
+        "override_id": None,
+        "created_at": b.created_at.isoformat(),
+        "strata": sorted([_stratum_dict(s) for s in b.strata], key=lambda x: x["depth_top"]),
+    }
+
+
+def _override_stratum_dict(source_id: int, s: dict, index: int) -> dict:
+    soil_type = s.get("soil_type") or "미분류"
+    return {
+        "id": s.get("id") or -(index + 1),
+        "borehole_id": source_id,
+        "depth_top": float(s.get("depth_top") or 0),
+        "depth_bottom": float(s.get("depth_bottom") or 0),
+        "soil_type": soil_type,
+        "strata_group": normalize_strata_group(soil_type),
+        "raw_text": s.get("raw_text"),
+        "n_value": s.get("n_value"),
+        "uscs_code": s.get("uscs_code"),
+    }
+
+
+def _apply_override(data: dict, override: ProjectBoreholeOverride) -> dict:
+    payload = override.data or {}
+    merged = {**data}
+    merged.update(
+        {
+            "project_id": override.project_id,
+            "source_borehole_id": data["id"],
+            "override_id": override.id,
+            "data_status": f"modified_{override.status}",
+            "is_supplementary": False,
+            "name": payload.get("name", data["name"]),
+            "longitude": payload.get("longitude", data["longitude"]),
+            "latitude": payload.get("latitude", data["latitude"]),
+            "elevation": payload.get("elevation", data["elevation"]),
+        }
+    )
+    if isinstance(payload.get("strata"), list):
+        merged["strata"] = [
+            _override_stratum_dict(data["id"], s, index)
+            for index, s in enumerate(payload["strata"])
+        ]
+    return merged
 
 
 @router.get("/")
@@ -43,6 +127,83 @@ async def list_projects(
     stmt = stmt.group_by(Project.id).order_by(Project.created_at.desc())
     rows = (await db.execute(stmt)).all()
     return [_project_with_count(p, cnt) for p, cnt in rows]
+
+
+@router.get("/{project_id}/boreholes/effective")
+async def list_effective_project_boreholes(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    project = (await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+
+    selected_ids = []
+    if isinstance(project.bbox, dict):
+        raw_ids = project.bbox.get("borehole_ids")
+        if isinstance(raw_ids, list):
+            selected_ids = [int(v) for v in raw_ids if str(v).strip()]
+
+    base_boreholes: list[Borehole] = []
+    if selected_ids:
+        base_boreholes = (await db.execute(
+            select(Borehole)
+            .options(selectinload(Borehole.strata))
+            .where(Borehole.id.in_(selected_ids), Borehole.deleted_at.is_(None))
+        )).scalars().all()
+
+    supplementary = (await db.execute(
+        select(Borehole)
+        .options(selectinload(Borehole.strata))
+        .where(
+            Borehole.project_id == project_id,
+            Borehole.deleted_at.is_(None),
+            Borehole.is_supplementary.is_(True),
+        )
+    )).scalars().all()
+
+    all_boreholes = base_boreholes + supplementary
+    if all_boreholes:
+        loc_rows = (await db.execute(
+            select(
+                Borehole.id,
+                func.ST_AsGeoJSON(Borehole.location).label("loc_json"),
+            ).where(Borehole.id.in_([b.id for b in all_boreholes]))
+        )).all()
+        loc_map = {row.id: row.loc_json for row in loc_rows}
+    else:
+        loc_map = {}
+
+    overrides = []
+    if selected_ids:
+        overrides = (await db.execute(
+            select(ProjectBoreholeOverride).where(
+                ProjectBoreholeOverride.project_id == project_id,
+                ProjectBoreholeOverride.source_borehole_id.in_(selected_ids),
+                ProjectBoreholeOverride.deleted_at.is_(None),
+                ProjectBoreholeOverride.status != "rejected",
+            )
+        )).scalars().all()
+    override_map = {o.source_borehole_id: o for o in overrides}
+
+    selected_order = {borehole_id: index for index, borehole_id in enumerate(selected_ids)}
+    rows: list[dict] = []
+    for b in sorted(base_boreholes, key=lambda item: selected_order.get(item.id, 0)):
+        item = _borehole_dict(b, loc_map.get(b.id))
+        override = override_map.get(b.id)
+        rows.append(_apply_override(item, override) if override else item)
+    rows.extend(_borehole_dict(b, loc_map.get(b.id)) for b in supplementary)
+
+    return {
+        "boreholes": rows,
+        "count": len(rows),
+        "total": len(rows),
+        "selected_count": len(selected_ids),
+        "override_count": len(overrides),
+    }
 
 
 @router.get("/{project_id}")

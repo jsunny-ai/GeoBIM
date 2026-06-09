@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-from io import BytesIO
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -16,19 +15,26 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import Borehole, Project, Stratum
-from app.services.odl_normalizer import PdfElement, find_elements_in_box, flatten_odl_json, text_from_elements
+from app.services.odl_normalizer import (
+    PdfElement,
+    TextLine,
+    find_elements_in_box,
+    flatten_odl_json,
+    group_elements_into_lines,
+    text_from_elements,
+)
 from app.services.odl_pdf_service import OdlPdfService
+from app.services.ocr_provider_service import extract_page_ocr
 from pdf_convert.core.coordinate_transformer import normalize_coordinates
 from pdf_convert.core.table_merger import STRATA_GROUP_MAP
 from pdf_convert.core.master_hybrid_extractor import MasterHybridExtractor
 from pdf_convert.parsers.hwp_indexed_extractor import clean_float, normalize_bh_id, normalize_strata, parse_coordinates
 
-try:
-    import pytesseract
-    from PIL import Image
-except Exception:  # pragma: no cover - optional OCR runtime
-    pytesseract = None
-    Image = None
+
+_OCR_BOX_MIN_OVERLAP = 0.05
+_TERMINATION_DEPTH_RE = re.compile(
+    r"(?:심도|depth)\s*[:：]?\s*([-+]?(?:\d+(?:[,.]\d+)?|[,.]\s*\d+))\s*(?:m|M|ｍ)?\s*(?:에서)?\s*(?:시추\s*종료|종료)"
+)
 
 
 class PdfService:
@@ -44,6 +50,7 @@ class PdfService:
         self.java_bin = java_bin or settings.java_bin_path or None
         os.environ.setdefault("PDF_CONVERT_DATA_DIR", os.path.join(self.output_dir, "data"))
         self.last_odl_metadata: dict[str, Any] | None = None
+        self.last_manual_ocr_metadata: dict[str, Any] | None = None
 
     def auto_extract(self, pdf_path: str, project_name: str) -> list[dict[str, Any]]:
         """Run the automatic hybrid extraction pipeline."""
@@ -160,6 +167,8 @@ class PdfService:
             if lon is None or lat is None:
                 raise ValueError(f"{name} 좌표가 없어 DB에 저장할 수 없습니다.")
 
+            _validate_wgs84_coordinates(name, lon, lat)
+
             borehole = Borehole(
                 project_id=project_id,
                 name=name,
@@ -203,8 +212,10 @@ class PdfService:
         box_definitions: dict[str, Any],
         *,
         odl_elements: list[PdfElement] | None = None,
+        ocr_cache: dict[int, list[PdfElement]] | None = None,
     ) -> dict[str, str]:
         """Extract text using normalized page boxes."""
+        ocr_cache = ocr_cache if ocr_cache is not None else {}
         doc = fitz.open(pdf_path)
         try:
             result: dict[str, str] = {}
@@ -222,7 +233,7 @@ class PdfService:
                 )
                 text = page.get_text("text", clip=clip).strip()
                 odl_text = _extract_odl_text_for_box(odl_elements, page, box)
-                ocr_text = _ocr_text_for_clip(page, clip) if not text and not odl_text else ""
+                ocr_text = _extract_ocr_text_for_box(ocr_cache, page, box)
                 text = _choose_best_box_text(
                     pymupdf_text=text,
                     odl_text=odl_text,
@@ -242,68 +253,43 @@ class PdfService:
     ) -> list[dict[str, Any]]:
         """Extract normalized rows from user-drawn field/column boxes."""
         odl_elements = self._load_odl_elements(pdf_path)
+        ocr_cache: dict[int, list[PdfElement]] = {}
         if _uses_auto_page_classification(box_definitions):
-            return self.extract_rows_with_page_templates(
+            rows = self.extract_rows_with_page_templates(
                 pdf_path,
                 box_definitions,
                 project_name,
                 odl_elements=odl_elements,
+                ocr_cache=ocr_cache,
             )
+            self.last_manual_ocr_metadata = _ocr_cache_metadata(ocr_cache)
+            return rows
 
-        fields = self.extract_with_template(pdf_path, box_definitions, odl_elements=odl_elements)
-        extracted_project_name = _to_text(fields.get("project_name")) or project_name
-        borehole_name = _to_text(fields.get("borehole_name")) or "BH-1"
-        source_crs = _to_text(fields.get("crs"))
-
-        raw_x, raw_y = _coordinates_from_fields(fields)
-        lon, lat, tmx, tmy, final_epsg = normalize_coordinates(
-            raw_x,
-            raw_y,
-            borehole_id=borehole_name,
-            source_crs=source_crs,
+        fields = self.extract_with_template(
+            pdf_path,
+            box_definitions,
+            odl_elements=odl_elements,
+            ocr_cache=ocr_cache,
         )
+        meta = _metadata_from_fields(fields, project_name)
 
-        top_depths = _split_depth_values(fields.get("top_depth"))
-        bottom_depths = _split_depth_values(fields.get("depth")) or _split_depth_values(fields.get("bottom_depth"))
-        strata_names = _split_strata_lines(fields.get("stratum_name"))
-
-        row_count = max(len(bottom_depths), len(strata_names))
-        if row_count == 0:
-            raise ValueError("심도 또는 지층명 컬럼 박스에서 행 데이터를 찾지 못했습니다.")
-
-        rows: list[dict[str, Any]] = []
-        previous_bottom = 0.0
-        for index in range(row_count):
-            bottom = clean_float(bottom_depths[index]) if index < len(bottom_depths) else None
-            if bottom is None:
-                continue
-
-            top = clean_float(top_depths[index]) if index < len(top_depths) else previous_bottom
-            if top is None:
-                top = previous_bottom
-
-            stratum_name = _normalize_stratum_name(strata_names[index] if index < len(strata_names) else None)
-            rows.append(
-                {
-                    "프로젝트명": extracted_project_name,
-                    "시추공명": borehole_name,
-                    "경도": raw_x,
-                    "위도": raw_y,
-                    "표고": clean_float(fields.get("elevation")),
-                    "상심도": top,
-                    "하심도": bottom,
-                    "지층명": stratum_name,
-                    "lon_wgs84": lon,
-                    "lat_wgs84": lat,
-                    "tm_x": tmx,
-                    "tm_y": tmy,
-                    "meta_crs": final_epsg,
-                }
+        doc = fitz.open(pdf_path)
+        try:
+            lines = _extract_lines_for_boxes(
+                doc,
+                box_definitions.get("boxes", []),
+                odl_elements=odl_elements,
+                ocr_cache=ocr_cache,
             )
-            previous_bottom = bottom
+            fields["final_depth"] = _termination_depth_for_page(doc[0], ocr_cache) or ""
+        finally:
+            doc.close()
+
+        rows, _ = _rows_from_manual_fields(fields=fields, meta=meta, previous_bottom=0.0, lines=lines)
 
         if not rows:
             raise ValueError("저장 가능한 지층 행을 만들지 못했습니다.")
+        self.last_manual_ocr_metadata = _ocr_cache_metadata(ocr_cache)
         return rows
 
     def extract_rows_with_page_templates(
@@ -313,8 +299,10 @@ class PdfService:
         project_name: str,
         *,
         odl_elements: list[PdfElement] | None = None,
+        ocr_cache: dict[int, list[PdfElement]] | None = None,
     ) -> list[dict[str, Any]]:
         """Apply first/continuation page templates across all PDF pages."""
+        ocr_cache = ocr_cache if ocr_cache is not None else {}
         boxes = box_definitions.get("boxes", [])
         page_mode = box_definitions.get("page_mode") or "split"
         first_boxes = [box for box in boxes if box.get("template") == "first"]
@@ -340,6 +328,7 @@ class PdfService:
                     page_number,
                     borehole_boxes,
                     odl_elements=odl_elements,
+                    ocr_cache=ocr_cache,
                 )
                 detected_borehole = _normalize_borehole_name(probe_fields.get("borehole_name"))
                 is_start_page = detected_borehole is not None
@@ -350,12 +339,20 @@ class PdfService:
                         page_number,
                         first_boxes,
                         odl_elements=odl_elements,
+                        ocr_cache=ocr_cache,
                     )
                     current_meta = _metadata_from_fields(first_fields, project_name)
                     if detected_borehole:
                         current_meta["borehole_name"] = detected_borehole
                     previous_bottom = 0.0
                     page_fields = dict(first_fields)
+                    page_lines = _extract_lines_on_page(
+                        doc,
+                        page_number,
+                        first_boxes,
+                        odl_elements=odl_elements,
+                        ocr_cache=ocr_cache,
+                    )
 
                     if not _has_table_fields(page_fields) and continuation_boxes:
                         page_fields.update(
@@ -364,6 +361,16 @@ class PdfService:
                                 page_number,
                                 continuation_boxes,
                                 odl_elements=odl_elements,
+                                ocr_cache=ocr_cache,
+                            )
+                        )
+                        page_lines.update(
+                            _extract_lines_on_page(
+                                doc,
+                                page_number,
+                                continuation_boxes,
+                                odl_elements=odl_elements,
+                                ocr_cache=ocr_cache,
                             )
                         )
                 else:
@@ -373,15 +380,25 @@ class PdfService:
                         page_number,
                         table_boxes,
                         odl_elements=odl_elements,
+                        ocr_cache=ocr_cache,
+                    )
+                    page_lines = _extract_lines_on_page(
+                        doc,
+                        page_number,
+                        table_boxes,
+                        odl_elements=odl_elements,
+                        ocr_cache=ocr_cache,
                     )
 
                 if current_meta is None:
                     continue
 
+                page_fields["final_depth"] = _termination_depth_for_page(doc[page_number - 1], ocr_cache) or ""
                 page_rows, previous_bottom = _rows_from_manual_fields(
                     fields=page_fields,
                     meta=current_meta,
                     previous_bottom=previous_bottom,
+                    lines=page_lines,
                 )
                 rows.extend(page_rows)
         finally:
@@ -413,6 +430,15 @@ def _to_float(value: Any) -> float | None:
         return float(text.replace(",", ""))
     except ValueError:
         return None
+
+
+def _validate_wgs84_coordinates(name: str, lon: float | None, lat: float | None) -> None:
+    if lon is None or lat is None:
+        raise ValueError(f"{name} 좌표 변환 결과가 없어 DB에 저장할 수 없습니다.")
+    if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+        raise ValueError(f"{name} 좌표 범위가 올바르지 않습니다. lon={lon}, lat={lat}")
+    if not (124.0 <= lon <= 132.0 and 33.0 <= lat <= 39.0):
+        raise ValueError(f"{name} 좌표가 한국 영역 범위를 벗어났습니다. lon={lon}, lat={lat}")
 
 
 def _to_text(value: Any) -> str | None:
@@ -590,6 +616,7 @@ def _extract_fields_on_page(
     boxes: list[dict[str, Any]],
     *,
     odl_elements: list[PdfElement] | None = None,
+    ocr_cache: dict[int, list[PdfElement]] | None = None,
 ) -> dict[str, str]:
     if page_number < 1 or page_number > len(doc):
         return {}
@@ -609,7 +636,7 @@ def _extract_fields_on_page(
         )
         text = page.get_text("text", clip=clip).strip()
         odl_text = _extract_odl_text_for_box(odl_elements, page, box)
-        ocr_text = _ocr_text_for_clip(page, clip) if not text and not odl_text else ""
+        ocr_text = _extract_ocr_text_for_box(ocr_cache, page, box)
         text = _choose_best_box_text(
             pymupdf_text=text,
             odl_text=odl_text,
@@ -618,6 +645,74 @@ def _extract_fields_on_page(
         )
         if text:
             result[label] = text
+    return result
+
+
+_TABLE_COLUMN_LABELS = {"depth", "bottom_depth", "top_depth", "stratum_name"}
+
+
+def _extract_lines_on_page(
+    doc: fitz.Document,
+    page_number: int,
+    boxes: list[dict[str, Any]],
+    *,
+    odl_elements: list[PdfElement] | None = None,
+    ocr_cache: dict[int, list[PdfElement]] | None = None,
+) -> dict[str, list[TextLine]]:
+    """Return bbox-aware text lines per multi-row column box (심도/지층명 등).
+
+    Single-value labels (e.g. borehole_name, elevation) don't need this — the
+    plain joined text from `_extract_fields_on_page` is enough. Multi-row
+    table columns need per-line bboxes so rows can be matched spatially
+    (`_rows_from_spatial_lines`) instead of by fragile list-index pairing.
+    """
+    if page_number < 1 or page_number > len(doc):
+        return {}
+    page = doc[page_number - 1]
+    result: dict[str, list[TextLine]] = {}
+    for box in boxes:
+        label = box.get("label")
+        if label not in _TABLE_COLUMN_LABELS:
+            continue
+        rect = box.get("rect")
+        if not rect or len(rect) != 4:
+            continue
+        lines = _lines_for_box(odl_elements=odl_elements, ocr_cache=ocr_cache, page=page, box=box)
+        if lines:
+            result[label] = lines
+    return result
+
+
+def _extract_lines_for_boxes(
+    doc: fitz.Document,
+    boxes: list[dict[str, Any]],
+    *,
+    odl_elements: list[PdfElement] | None = None,
+    ocr_cache: dict[int, list[PdfElement]] | None = None,
+) -> dict[str, list[TextLine]]:
+    """Like `_extract_lines_on_page`, but boxes may reference different pages.
+
+    Used by the single box-set extraction path (`extract_rows_with_template`),
+    where each box carries its own `page` index rather than all boxes sharing
+    one page (as in the first/continuation page-template flow).
+    """
+    by_page: dict[int, list[dict[str, Any]]] = {}
+    for box in boxes:
+        if box.get("label") not in _TABLE_COLUMN_LABELS:
+            continue
+        try:
+            page_number = int(box["page"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        by_page.setdefault(page_number, []).append(box)
+
+    result: dict[str, list[TextLine]] = {}
+    for page_number, page_boxes in by_page.items():
+        page_lines = _extract_lines_on_page(
+            doc, page_number, page_boxes, odl_elements=odl_elements, ocr_cache=ocr_cache
+        )
+        for label, lines in page_lines.items():
+            result.setdefault(label, lines)
     return result
 
 
@@ -646,23 +741,162 @@ def _extract_odl_text_for_box(
     return text_from_elements(elements)
 
 
-def _ocr_text_for_clip(page: fitz.Page, clip: fitz.Rect) -> str:
-    if not settings.pdf_box_ocr_enabled or pytesseract is None or Image is None:
+def _extract_ocr_text_for_box(
+    ocr_cache: dict[int, list[PdfElement]] | None,
+    page: fitz.Page,
+    box: dict[str, Any],
+) -> str:
+    if ocr_cache is None:
         return ""
-    if clip.is_empty or clip.width <= 0 or clip.height <= 0:
+    rect = box.get("rect")
+    if not rect or len(rect) != 4:
         return ""
+    width, height = page.rect.width, page.rect.height
+    pdf_space_box = (
+        float(rect[0]) * width,
+        height - (float(rect[3]) * height),
+        float(rect[2]) * width,
+        height - (float(rect[1]) * height),
+    )
+    page_number = page.number + 1
+    if page_number not in ocr_cache:
+        ocr_cache[page_number] = _ocr_elements_for_page(page)
+    elements = find_elements_in_box(
+        ocr_cache[page_number],
+        page_number=page_number,
+        box=pdf_space_box,
+        min_overlap=_OCR_BOX_MIN_OVERLAP,
+    )
+    return text_from_elements(elements)
+
+
+def _box_to_pdf_space(page: fitz.Page, box: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    """Convert a normalized (0-1, top-left origin) box rect to PDF-space bbox (bottom-left origin)."""
+    rect = box.get("rect")
+    if not rect or len(rect) != 4:
+        return None
+    width, height = page.rect.width, page.rect.height
+    return (
+        float(rect[0]) * width,
+        height - (float(rect[3]) * height),
+        float(rect[2]) * width,
+        height - (float(rect[1]) * height),
+    )
+
+
+def _odl_lines_for_box(
+    odl_elements: list[PdfElement] | None,
+    page: fitz.Page,
+    box: dict[str, Any],
+) -> list[TextLine]:
+    """Return ODL-derived text lines (with bbox) overlapping the box, in visual order."""
+    if not odl_elements:
+        return []
+    pdf_space_box = _box_to_pdf_space(page, box)
+    if pdf_space_box is None:
+        return []
+    elements = find_elements_in_box(odl_elements, page_number=page.number + 1, box=pdf_space_box)
+    return group_elements_into_lines(elements)
+
+
+def _ocr_lines_for_box(
+    ocr_cache: dict[int, list[PdfElement]] | None,
+    page: fitz.Page,
+    box: dict[str, Any],
+) -> list[TextLine]:
+    """Return OCR-derived text lines (with bbox) overlapping the box, in visual order."""
+    if ocr_cache is None:
+        return []
+    pdf_space_box = _box_to_pdf_space(page, box)
+    if pdf_space_box is None:
+        return []
+    page_number = page.number + 1
+    if page_number not in ocr_cache:
+        ocr_cache[page_number] = _ocr_elements_for_page(page)
+    elements = find_elements_in_box(
+        ocr_cache[page_number],
+        page_number=page_number,
+        box=pdf_space_box,
+        min_overlap=_OCR_BOX_MIN_OVERLAP,
+    )
+    return group_elements_into_lines(elements)
+
+
+def _lines_for_box(
+    *,
+    odl_elements: list[PdfElement] | None,
+    ocr_cache: dict[int, list[PdfElement]] | None,
+    page: fitz.Page,
+    box: dict[str, Any],
+) -> list[TextLine]:
+    """Return the best available bbox-aware text lines for a box.
+
+    Prefers whichever element-backed source (ODL text layer or OCR) detected
+    more lines, since a richer line set is less likely to have merged rows
+    together. Falls back to the other source when one is empty. Plain
+    PyMuPDF text has no per-line bbox info and is intentionally not handled
+    here — callers fall back to index-based pairing when this returns [].
+    """
+    odl_lines = _odl_lines_for_box(odl_elements, page, box)
+    ocr_lines = _ocr_lines_for_box(ocr_cache, page, box)
+    if odl_lines and ocr_lines:
+        return odl_lines if len(odl_lines) >= len(ocr_lines) else ocr_lines
+    return odl_lines or ocr_lines
+
+
+def _ocr_elements_for_page(page: fitz.Page) -> list[PdfElement]:
+    if not settings.pdf_box_ocr_enabled:
+        return []
+    return _provider_ocr_elements_for_page(page)
+
+
+def _termination_depth_for_page(page: fitz.Page, ocr_cache: dict[int, list[PdfElement]] | None) -> str:
+    """Read the drill-termination depth from page-level OCR, e.g. '심도 10.00 M 에서 시추종료'."""
+    if ocr_cache is None:
+        return ""
+    page_number = page.number + 1
+    if page_number not in ocr_cache:
+        ocr_cache[page_number] = _ocr_elements_for_page(page)
+    text = text_from_elements(ocr_cache[page_number])
+    if not text:
+        return ""
+    compact = re.sub(r"\s+", " ", text)
+    match = _TERMINATION_DEPTH_RE.search(compact)
+    if not match:
+        return ""
+    cleaned = match.group(1).replace(",", ".")
+    parsed = clean_float(cleaned)
+    return f"{parsed:g}" if parsed is not None else ""
+
+
+def _provider_ocr_elements_for_page(page: fitz.Page) -> list[PdfElement]:
     try:
         scale = max(float(settings.pdf_box_ocr_scale or 3.0), 1.0)
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
-        image = Image.open(BytesIO(pixmap.tobytes("png")))
-        text = pytesseract.image_to_string(
-            image,
-            lang=settings.pdf_box_ocr_lang,
-            config="--psm 6",
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        image_bytes = pixmap.tobytes("png")
+        result = extract_page_ocr(
+            image_bytes=image_bytes,
+            page_number=page.number + 1,
+            page_width=page.rect.width,
+            page_height=page.rect.height,
+            image_width=pixmap.width,
+            image_height=pixmap.height,
         )
-        return text.strip()
+        return result.elements
     except Exception:
-        return ""
+        return []
+
+
+def _ocr_cache_metadata(ocr_cache: dict[int, list[PdfElement]]) -> dict[str, Any]:
+    return {
+        "enabled": bool(settings.pdf_box_ocr_enabled),
+        "provider": settings.pdf_ocr_provider,
+        "scale": settings.pdf_box_ocr_scale,
+        "easyocr_langs": settings.pdf_easyocr_langs,
+        "paddle_lang": settings.pdf_paddle_ocr_lang,
+        "pages": sorted(ocr_cache.keys()),
+        "word_count": sum(len(elements) for elements in ocr_cache.values()),
+    }
 
 
 def _choose_best_box_text(*, pymupdf_text: str, odl_text: str, ocr_text: str = "", field: str) -> str:
@@ -721,16 +955,33 @@ def _normalize_borehole_name(value: Any) -> str | None:
     if not text:
         return None
     for line in _split_lines(text):
+        embedded = _extract_embedded_borehole_id(line)
+        if embedded:
+            return embedded
         if _looks_like_elevation_text(line):
             continue
         normalized = normalize_bh_id(line)
         if _looks_like_borehole_id(normalized):
             return normalized
+    embedded = _extract_embedded_borehole_id(text)
+    if embedded:
+        return embedded
     if _looks_like_elevation_text(text):
         return None
     normalized = normalize_bh_id(text)
     if _looks_like_borehole_id(normalized):
         return normalized
+    return None
+
+
+def _extract_embedded_borehole_id(value: Any) -> str | None:
+    text = str(value or "").upper()
+    for match in re.finditer(r"\b(B\s*H|CH|NH|H|B)\s*-?\s*(\d+[A-Z0-9-]*)\b", text):
+        prefix = re.sub(r"\s+", "", match.group(1))
+        candidate = f"{prefix}-{match.group(2)}"
+        normalized = normalize_bh_id(candidate)
+        if _looks_like_borehole_id(normalized):
+            return normalized
     return None
 
 
@@ -790,15 +1041,152 @@ def _table_boxes(boxes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [box for box in boxes if box.get("label") in {"depth", "bottom_depth", "top_depth", "stratum_name"}]
 
 
-def _rows_from_manual_fields(
+def _depth_value_from_line(text: str) -> float | None:
+    """Parse the first plausible depth number out of a single text line."""
+    for value in _split_depth_values(text):
+        parsed = clean_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _y_overlap_ratio(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    """Vertical overlap between two bboxes, relative to the shorter one's height."""
+    bottom = max(a[1], b[1])
+    top = min(a[3], b[3])
+    if top <= bottom:
+        return 0.0
+    shortest = min(a[3] - a[1], b[3] - b[1])
+    if shortest <= 0:
+        return 0.0
+    return (top - bottom) / shortest
+
+
+def _match_line_by_position(anchor: TextLine, candidates: list[TextLine]) -> TextLine | None:
+    """Pick the candidate line whose vertical position best matches the anchor.
+
+    Prefers the candidate with the largest vertical overlap; if none overlap,
+    falls back to the candidate whose vertical center is closest. This lets a
+    stratum-name cell that visually spans several depth rows (a merged cell)
+    correctly match each of those rows, instead of drifting out of alignment
+    the way plain index-based pairing does once one column has a different
+    number of detected lines than another.
+    """
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda cand: _y_overlap_ratio(anchor.bbox, cand.bbox))
+    if _y_overlap_ratio(anchor.bbox, best.bbox) > 0:
+        return best
+    return min(candidates, key=lambda cand: abs(cand.y_center - anchor.y_center))
+
+
+def _next_stratum_line_after_anchor(strata_lines: list[TextLine], anchor: TextLine | None) -> TextLine | None:
+    """Find the layer name visually below the last depth anchor for final-depth repair."""
+    if not strata_lines:
+        return None
+    if anchor is None:
+        return strata_lines[-1]
+    below = [line for line in strata_lines if line.y_center < anchor.y_center]
+    if below:
+        return max(below, key=lambda line: line.y_center)
+    return strata_lines[-1]
+
+
+def _build_stratum_row(*, meta: dict[str, Any], top: float, bottom: float, stratum_name: str) -> dict[str, Any]:
+    return {
+        "프로젝트명": meta["project_name"],
+        "시추공명": meta["borehole_name"],
+        "경도": meta["raw_x"],
+        "위도": meta["raw_y"],
+        "표고": meta["elevation"],
+        "상심도": top,
+        "하심도": bottom,
+        "지층명": stratum_name,
+        "lon_wgs84": meta["lon_wgs84"],
+        "lat_wgs84": meta["lat_wgs84"],
+        "tm_x": meta["tm_x"],
+        "tm_y": meta["tm_y"],
+        "meta_crs": meta["meta_crs"],
+    }
+
+
+def _rows_from_spatial_lines(
     *,
-    fields: dict[str, str],
+    bottom_lines: list[TextLine],
+    top_lines: list[TextLine],
+    strata_lines: list[TextLine],
+    meta: dict[str, Any],
+    previous_bottom: float,
+    final_depth: float | None = None,
+) -> tuple[list[dict[str, Any]], float]:
+    """Match depth/stratum columns by vertical position instead of list index.
+
+    Each detected bottom-depth line acts as a row anchor — depth numbers are
+    the most structurally reliable column (monotonically increasing, rarely
+    merged across rows). For every anchor we look up whichever top-depth and
+    stratum-name lines occupy the same vertical band on the page. This stays
+    correct even when OCR detects a different number of lines per column
+    (e.g. a stratum-name cell visually merged across two depth rows correctly
+    matches both rows), where index-based pairing would silently drift out of
+    alignment for every row that follows.
+    """
+    anchors = sorted(
+        (
+            (value, line)
+            for line in bottom_lines
+            for value in [_depth_value_from_line(line.text)]
+            if value is not None
+        ),
+        key=lambda item: -item[1].bbox[3],  # PDF space (bottom-left origin): higher top = earlier on page
+    )
+
+    rows: list[dict[str, Any]] = []
+    current_bottom = previous_bottom
+    last_anchor: TextLine | None = None
+    for bottom, line in anchors:
+        if bottom <= current_bottom:
+            continue
+
+        top_match = _match_line_by_position(line, top_lines)
+        top = _depth_value_from_line(top_match.text) if top_match else None
+        if top is None:
+            top = current_bottom
+
+        strata_match = _match_line_by_position(line, strata_lines)
+        stratum_name = _normalize_stratum_name(strata_match.text if strata_match else None)
+
+        rows.append(_build_stratum_row(meta=meta, top=top, bottom=bottom, stratum_name=stratum_name))
+        current_bottom = bottom
+        last_anchor = line
+
+    if final_depth is not None and final_depth > current_bottom:
+        fallback_line = _next_stratum_line_after_anchor(strata_lines, last_anchor)
+        stratum_name = _normalize_stratum_name(fallback_line.text if fallback_line else None)
+        rows.append(_build_stratum_row(meta=meta, top=current_bottom, bottom=final_depth, stratum_name=stratum_name))
+        current_bottom = final_depth
+
+    return rows, current_bottom
+
+
+def _rows_from_indexed_values(
+    *,
+    top_depths: list[str],
+    bottom_depths: list[str],
+    strata_names: list[str],
     meta: dict[str, Any],
     previous_bottom: float,
 ) -> tuple[list[dict[str, Any]], float]:
-    top_depths = _split_depth_values(fields.get("top_depth"))
-    bottom_depths = _split_depth_values(fields.get("depth")) or _split_depth_values(fields.get("bottom_depth"))
-    strata_names = _split_strata_lines(fields.get("stratum_name"))
+    """Pair depth/stratum values by list index (legacy fallback).
+
+    Only safe when every column yields the same number of entries in the same
+    order — true for clean digital text layers, but fragile for OCR'd scans
+    where merged cells or misreads shift one column out of sync with the
+    others. Used only when no bbox-aware line data is available (e.g. plain
+    PyMuPDF text with ODL/OCR unavailable).
+    """
     row_count = max(len(bottom_depths), len(strata_names))
 
     rows: list[dict[str, Any]] = []
@@ -813,23 +1201,56 @@ def _rows_from_manual_fields(
             top = current_bottom
 
         stratum_name = _normalize_stratum_name(strata_names[index] if index < len(strata_names) else None)
-        rows.append(
-            {
-                "프로젝트명": meta["project_name"],
-                "시추공명": meta["borehole_name"],
-                "경도": meta["raw_x"],
-                "위도": meta["raw_y"],
-                "표고": meta["elevation"],
-                "상심도": top,
-                "하심도": bottom,
-                "지층명": stratum_name,
-                "lon_wgs84": meta["lon_wgs84"],
-                "lat_wgs84": meta["lat_wgs84"],
-                "tm_x": meta["tm_x"],
-                "tm_y": meta["tm_y"],
-                "meta_crs": meta["meta_crs"],
-            }
-        )
+        rows.append(_build_stratum_row(meta=meta, top=top, bottom=bottom, stratum_name=stratum_name))
         current_bottom = bottom
 
+    return rows, current_bottom
+
+
+def _rows_from_manual_fields(
+    *,
+    fields: dict[str, str],
+    meta: dict[str, Any],
+    previous_bottom: float,
+    lines: dict[str, list[TextLine]] | None = None,
+) -> tuple[list[dict[str, Any]], float]:
+    """Build stratum rows for a page, preferring spatial (bbox) matching.
+
+    `lines` carries bbox-aware text lines per box label when ODL/OCR element
+    data was available for this page. When both the depth and stratum-name
+    columns produced bbox-aware lines, rows are matched by vertical position
+    (`_rows_from_spatial_lines`) — robust against OCR detecting a different
+    number of entries per column. Otherwise we fall back to the legacy
+    index-based pairing over the plain extracted text.
+    """
+    lines = lines or {}
+    bottom_lines = lines.get("depth") or lines.get("bottom_depth") or []
+    top_lines = lines.get("top_depth") or []
+    strata_lines = lines.get("stratum_name") or []
+    final_depth = clean_float(fields.get("final_depth"))
+
+    if bottom_lines and strata_lines:
+        return _rows_from_spatial_lines(
+            bottom_lines=bottom_lines,
+            top_lines=top_lines,
+            strata_lines=strata_lines,
+            meta=meta,
+            previous_bottom=previous_bottom,
+            final_depth=final_depth,
+        )
+
+    top_depths = _split_depth_values(fields.get("top_depth"))
+    bottom_depths = _split_depth_values(fields.get("depth")) or _split_depth_values(fields.get("bottom_depth"))
+    strata_names = _split_strata_lines(fields.get("stratum_name"))
+    rows, current_bottom = _rows_from_indexed_values(
+        top_depths=top_depths,
+        bottom_depths=bottom_depths,
+        strata_names=strata_names,
+        meta=meta,
+        previous_bottom=previous_bottom,
+    )
+    if final_depth is not None and final_depth > current_bottom:
+        stratum_name = _normalize_stratum_name(strata_names[-1] if strata_names else None)
+        rows.append(_build_stratum_row(meta=meta, top=current_bottom, bottom=final_depth, stratum_name=stratum_name))
+        current_bottom = final_depth
     return rows, current_bottom

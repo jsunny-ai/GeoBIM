@@ -172,7 +172,7 @@ class OdlPdfService:
                     "hybrid_mode": settings.pdf_odl_hybrid_mode,
                     "hybrid_url": settings.pdf_odl_hybrid_url,
                     "hybrid_timeout": str(max(settings.pdf_odl_timeout_seconds, 1) * 1000),
-                    "hybrid_fallback": True,
+                    "hybrid_fallback": False,
                 }
             )
         opendataloader_pdf.convert(**kwargs)

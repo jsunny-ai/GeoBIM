@@ -326,6 +326,7 @@ async def extract_job_boxes(
                 "source_file": job.file_path,
                 "box_definitions": box_definitions,
                 "odl": service.last_odl_metadata,
+                "ocr": service.last_manual_ocr_metadata,
                 "rows": rows,
                 **summary,
             }
@@ -359,6 +360,7 @@ async def extract_job_boxes(
 @router.post("/jobs/{job_id}/approve")
 async def approve_job(
     job_id: int,
+    payload: dict | None = None,
     db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(get_current_user),
 ) -> dict:
@@ -368,6 +370,14 @@ async def approve_job(
         raise HTTPException(status_code=404, detail="추출 작업을 찾을 수 없습니다.")
     if job.status != ExtractionJobStatus.AWAITING_REVIEW:
         raise HTTPException(status_code=409, detail="승인 가능한 상태가 아닙니다.")
+
+    if payload and "rows" in payload:
+        result = dict(job.result or {})
+        result["rows"] = payload["rows"]
+        job.result = result
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
 
     rows = (job.result or {}).get("rows") if job.result else None
     if not rows:

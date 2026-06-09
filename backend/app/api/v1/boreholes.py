@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_db
-from app.models import Borehole, Stratum, User
+from app.models import Borehole, Project, ProjectBoreholeOverride, Stratum, User
 from app.services.normalization import normalize_strata_group
 
 router = APIRouter()
@@ -55,6 +55,12 @@ class BoreholeUpdate(BaseModel):
     elevation: float | None = None
 
 
+class BoreholeOverrideUpdate(BoreholeUpdate):
+    name: str | None = None
+    strata: list[StratumInput] | None = None
+    status: str = "draft"
+
+
 class ByAreaRequest(BaseModel):
     polygon: dict
     project_id: int | None = None
@@ -85,6 +91,9 @@ def _borehole_dict(b: Borehole, loc_json: str | None, *, include_strata: bool = 
         "source_crs": b.source_crs,
         "source_file": b.source_file,
         "is_supplementary": getattr(b, "is_supplementary", False),
+        "data_status": "supplementary" if getattr(b, "is_supplementary", False) else "original",
+        "source_borehole_id": None,
+        "override_id": None,
         "created_at": b.created_at.isoformat(),
     }
     if include_strata and hasattr(b, "strata"):
@@ -107,6 +116,49 @@ def _stratum_dict(s: Stratum) -> dict:
         "n_value": s.n_value,
         "uscs_code": s.uscs_code,
     }
+
+
+def _stratum_payload_dict(s: dict, index: int) -> dict:
+    soil_type = s.get("soil_type") or "미분류"
+    return {
+        "id": s.get("id") or -(index + 1),
+        "borehole_id": s.get("borehole_id") or 0,
+        "depth_top": float(s.get("depth_top") or 0),
+        "depth_bottom": float(s.get("depth_bottom") or 0),
+        "soil_type": soil_type,
+        "strata_group": normalize_strata_group(soil_type),
+        "raw_text": s.get("raw_text"),
+        "n_value": s.get("n_value"),
+        "uscs_code": s.get("uscs_code"),
+    }
+
+
+def _apply_project_override(
+    source: Borehole,
+    loc_json: str | None,
+    override: ProjectBoreholeOverride,
+) -> dict:
+    data = _borehole_dict(source, loc_json, include_strata=True)
+    payload = override.data or {}
+    data.update(
+        {
+            "project_id": override.project_id,
+            "source_borehole_id": source.id,
+            "data_status": f"modified_{override.status}",
+            "override_id": override.id,
+            "name": payload.get("name", data["name"]),
+            "longitude": payload.get("longitude", data["longitude"]),
+            "latitude": payload.get("latitude", data["latitude"]),
+            "elevation": payload.get("elevation", data["elevation"]),
+            "is_supplementary": False,
+        }
+    )
+    if isinstance(payload.get("strata"), list):
+        data["strata"] = [
+            _stratum_payload_dict({**s, "borehole_id": source.id}, index)
+            for index, s in enumerate(payload["strata"])
+        ]
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +222,7 @@ async def create_borehole(
 @router.get("/")
 async def list_boreholes(
     project_id: int | None = None,
+    ids: str | None = Query(None),
     include_strata: bool = Query(False),
     limit: int = Query(10000, ge=1, le=50000),
     offset: int = Query(0, ge=0),
@@ -180,6 +233,15 @@ async def list_boreholes(
         Borehole,
         func.ST_AsGeoJSON(Borehole.location).label("loc_json"),
     ).where(Borehole.deleted_at.is_(None))
+
+    id_filter: list[int] | None = None
+    if ids:
+        try:
+            id_filter = [int(part) for part in ids.split(",") if part.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="ids must be a comma-separated list of integers")
+        if id_filter:
+            base_stmt = base_stmt.where(Borehole.id.in_(id_filter))
 
     if project_id is not None:
         base_stmt = base_stmt.where(Borehole.project_id == project_id)
@@ -192,6 +254,8 @@ async def list_boreholes(
             select(Borehole.id)
             .where(Borehole.deleted_at.is_(None))
         )
+        if id_filter:
+            ids_stmt = ids_stmt.where(Borehole.id.in_(id_filter))
         if project_id is not None:
             ids_stmt = ids_stmt.where(Borehole.project_id == project_id)
         ids_stmt = ids_stmt.limit(limit).offset(offset)
@@ -336,6 +400,99 @@ async def replace_strata(
         await db.refresh(s)
 
     return sorted([_stratum_dict(s) for s in new_strata], key=lambda x: x["depth_top"])
+
+
+@router.put("/{borehole_id}/project-overrides/{project_id}")
+async def upsert_project_borehole_override(
+    borehole_id: int,
+    project_id: int,
+    body: BoreholeOverrideUpdate,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    project = (await db.execute(
+        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
+    )).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+
+    source = (await db.execute(
+        select(Borehole)
+        .options(selectinload(Borehole.strata))
+        .where(Borehole.id == borehole_id, Borehole.deleted_at.is_(None))
+    )).scalar_one_or_none()
+    if source is None:
+        raise HTTPException(status_code=404, detail="시추공을 찾을 수 없습니다.")
+    if source.is_supplementary:
+        raise HTTPException(status_code=409, detail="신규 시추공은 원본 수정본이 아니라 직접 수정해야 합니다.")
+
+    if body.strata:
+        for s in body.strata:
+            if s.depth_bottom <= s.depth_top:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"depth_bottom({s.depth_bottom}) > depth_top({s.depth_top}) 이어야 합니다.",
+                )
+
+    payload = {
+        "name": body.name or source.name,
+        "latitude": body.latitude,
+        "longitude": body.longitude,
+        "elevation": body.elevation,
+        "strata": [
+            {
+                "depth_top": s.depth_top,
+                "depth_bottom": s.depth_bottom,
+                "soil_type": s.soil_type,
+                "raw_text": s.raw_text,
+                "n_value": s.n_value,
+                "uscs_code": s.uscs_code,
+            }
+            for s in (body.strata or [])
+        ],
+    }
+    loc_json = (await db.execute(
+        select(func.ST_AsGeoJSON(Borehole.location)).where(Borehole.id == source.id)
+    )).scalar()
+    source_lng, source_lat = _loc_to_lng_lat(loc_json)
+    payload["latitude"] = payload["latitude"] if payload["latitude"] is not None else source_lat
+    payload["longitude"] = payload["longitude"] if payload["longitude"] is not None else source_lng
+    payload["elevation"] = payload["elevation"] if payload["elevation"] is not None else source.elevation
+    if not payload["strata"]:
+        payload["strata"] = [
+            {
+                "depth_top": s.depth_top,
+                "depth_bottom": s.depth_bottom,
+                "soil_type": s.soil_type,
+                "raw_text": s.raw_text,
+                "n_value": s.n_value,
+                "uscs_code": s.uscs_code,
+            }
+            for s in sorted(source.strata, key=lambda s: s.depth_top)
+        ]
+
+    override = (await db.execute(
+        select(ProjectBoreholeOverride).where(
+            ProjectBoreholeOverride.project_id == project_id,
+            ProjectBoreholeOverride.source_borehole_id == borehole_id,
+            ProjectBoreholeOverride.deleted_at.is_(None),
+        )
+    )).scalar_one_or_none()
+    if override is None:
+        override = ProjectBoreholeOverride(
+            project_id=project_id,
+            source_borehole_id=borehole_id,
+            status=body.status,
+            data=payload,
+        )
+        db.add(override)
+    else:
+        override.status = body.status
+        override.data = payload
+
+    await db.commit()
+    await db.refresh(override)
+    return _apply_project_override(source, loc_json, override)
 
 
 # ---------------------------------------------------------------------------

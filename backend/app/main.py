@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.api.v1 import auth, boreholes, pdf_extraction, projects, templates, tiles, rbf, export
+from app.api.v1 import auth, boreholes, coordinates, pdf_extraction, projects, templates, tiles, rbf, export
 from app.core.config import settings
 from app.core.database import engine
 
@@ -42,6 +42,26 @@ async def _ensure_dev_schema() -> None:
         """
         ALTER TABLE pdf_extraction_jobs
         ADD COLUMN IF NOT EXISTS is_supplementary BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS project_borehole_overrides (
+            id BIGSERIAL PRIMARY KEY,
+            project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            source_borehole_id BIGINT NOT NULL REFERENCES boreholes(id) ON DELETE CASCADE,
+            status VARCHAR(30) NOT NULL DEFAULT 'draft',
+            data JSON NOT NULL DEFAULT '{}'::json,
+            submitted_at TIMESTAMPTZ NULL,
+            approved_at TIMESTAMPTZ NULL,
+            approved_by_id BIGINT NULL REFERENCES users(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            deleted_at TIMESTAMPTZ NULL
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_project_borehole_overrides_active
+        ON project_borehole_overrides(project_id, source_borehole_id)
+        WHERE deleted_at IS NULL
         """,
     ]
     async with engine.begin() as conn:
@@ -81,6 +101,7 @@ PREFIX = "/api/v1"
 app.include_router(auth.router,           prefix=PREFIX + "/auth",           tags=["auth"])
 app.include_router(projects.router,       prefix=PREFIX + "/projects",       tags=["projects"])
 app.include_router(boreholes.router,      prefix=PREFIX + "/boreholes",      tags=["boreholes"])
+app.include_router(coordinates.router,    prefix=PREFIX + "/coordinates",    tags=["coordinates"])
 app.include_router(pdf_extraction.router, prefix=PREFIX + "/pdf-extraction", tags=["pdf-extraction"])
 app.include_router(templates.router,      prefix=PREFIX + "/templates",      tags=["templates"])
 app.include_router(tiles.router,          prefix=PREFIX + "/tiles",          tags=["tiles"])

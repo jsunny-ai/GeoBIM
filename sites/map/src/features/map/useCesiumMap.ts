@@ -184,17 +184,17 @@ export function useCesiumMap(
       const groundZ = zMode === 'gl' ? 0.5 : elev * vexag + 0.5
       const centerCartesian = Cesium.Cartesian3.fromDegrees(b.longitude, b.latitude, groundZ)
 
-      // 지표면 회색 점 마커 🔘
+      // 지표면 시추공 점 마커
       dataSource.entities.add({
         id: `bh-${b.id}`,
         position: centerCartesian,
         point: {
-          pixelSize: 8,
-          color: Cesium.Color.fromCssColorString("#7F8C8D"), // 은회색 계열
-          outlineColor: Cesium.Color.WHITE,
-          outlineWidth: 1.5,
+          pixelSize: 7,
+          color: Cesium.Color.fromCssColorString("#0B4EA2"),
+          outlineColor: Cesium.Color.fromCssColorString("#EAF3FF"),
+          outlineWidth: 1,
           disableDepthTestDistance: Number.POSITIVE_INFINITY, // 항상 지표면 위에 표현
-          scaleByDistance: new Cesium.NearFarScalar(1500, 1.0, 15000, 0.25),
+          scaleByDistance: new Cesium.NearFarScalar(1500, 1.0, 15000, 0.45),
         },
         label: {
           text: b.name,

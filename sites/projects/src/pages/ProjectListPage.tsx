@@ -3,19 +3,17 @@ import { Building2, FileText, Layers, Map, MapPin, Plus, Trash2 } from "lucide-r
 import { useQueryClient } from "@tanstack/react-query"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import Navbar from "@/components/Navbar"
-import { useBoreholes } from "@/features/boreholes/hooks"
 import { useProjects } from "@/features/projects/hooks"
 import { api } from "@/lib/api"
 import type { Project } from "@/lib/types"
 
 function fallbackBoreholeCount(project: Project) {
   const selectedIds = project.bbox?.borehole_ids
-  return Array.isArray(selectedIds) ? selectedIds.length : project.borehole_count
+  return (Array.isArray(selectedIds) ? selectedIds.length : 0) + project.borehole_count
 }
 
 function ProjectBoreholeCount({ project }: { project: Project }) {
-  const { data: boreholes } = useBoreholes(project.id)
-  const count = boreholes?.length ?? fallbackBoreholeCount(project)
+  const count = fallbackBoreholeCount(project)
 
   return <>시추공 {count}개</>
 }

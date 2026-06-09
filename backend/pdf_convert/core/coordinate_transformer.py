@@ -74,24 +74,37 @@ class _TmParams:
         )
 
 
-def _p(ellipsoid, lon0, fn):
-    return _TmParams(ellipsoid=ellipsoid, central_meridian=lon0, false_northing=fn)
+def _p(ellipsoid, lon0, fn, fe=200000.0, lat0=38.0, k=1.0):
+    return _TmParams(
+        ellipsoid=ellipsoid,
+        central_meridian=lon0,
+        false_northing=fn,
+        false_easting=fe,
+        central_latitude=lat0,
+        scale_factor=k,
+    )
 
 
 # 한국 좌표계 프리셋
 _PRESETS = {
     # GRS80 기반 (현행)
+    'EPSG:5185': _p('grs80',   125.0,                600000.0),
     'EPSG:5186': _p('grs80',   127.0,                600000.0),
     'EPSG:5187': _p('grs80',   129.0,                600000.0),
+    'EPSG:5188': _p('grs80',   131.0,                600000.0),
+    'EPSG:5179': _p('grs80',   127.5,                2000000.0, fe=1000000.0, k=0.9996),
+    'EPSG:5180': _p('grs80',   125.0,                500000.0),
     'EPSG:5181': _p('grs80',   127.0,                500000.0),
     'EPSG:5183': _p('grs80',   129.0,                500000.0),
+    'EPSG:5184': _p('grs80',   131.0,                500000.0),
     # Bessel 기반 (구형)
+    'EPSG:5173': _p('bessel',  125.0028902777778,    500000.0),
     'EPSG:5174': _p('bessel',  127.0028902777778,    500000.0),
     'EPSG:5176': _p('bessel',  129.0028902777778,    500000.0),
 }
 
-_GRS80_EPSG = {'EPSG:5186', 'EPSG:5187', 'EPSG:5181', 'EPSG:5183'}
-_BESSEL_EPSG = {'EPSG:5174', 'EPSG:5176'}
+_GRS80_EPSG = {'EPSG:5179', 'EPSG:5180', 'EPSG:5181', 'EPSG:5183', 'EPSG:5184', 'EPSG:5185', 'EPSG:5186', 'EPSG:5187', 'EPSG:5188'}
+_BESSEL_EPSG = {'EPSG:5173', 'EPSG:5174', 'EPSG:5176'}
 
 
 # ===========================================================================
@@ -240,15 +253,8 @@ try:
             'EPSG:4326', always_xy=True
         )
     _bessel_transformers = {}  # reset — use proj string directly below
-    for _epsg, _ps in {
-        'EPSG:5174': ('+proj=tmerc +lat_0=38 +lon_0=127.0028902777778 +k=1 '
-                      '+x_0=200000 +y_0=500000 +ellps=bessel +units=m '
-                      '+towgs84=-145.907,505.034,685.756,-1.162,2.347,1.592,6.342 +no_defs'),
-        'EPSG:5176': ('+proj=tmerc +lat_0=38 +lon_0=129.0028902777778 +k=1 '
-                      '+x_0=200000 +y_0=500000 +ellps=bessel +units=m '
-                      '+towgs84=-145.907,505.034,685.756,-1.162,2.347,1.592,6.342 +no_defs'),
-    }.items():
-        _bessel_transformers[_epsg] = Transformer.from_crs(_ps, 'EPSG:4326', always_xy=True)
+    for _epsg in _BESSEL_EPSG:
+        _bessel_transformers[_epsg] = Transformer.from_crs(_epsg, 'EPSG:4326', always_xy=True)
 
     # WGS84 → EPSG:5186 (tm_x/tm_y 역산용)
     _to_5186 = Transformer.from_crs('EPSG:4326', 'EPSG:5186', always_xy=True)
@@ -297,7 +303,7 @@ def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
     final_epsg = source_crs or 'UNKNOWN'
 
     # [Scale Error 보정] 동부원점(lon_0=129)은 제외
-    _DONGBU = ('EPSG:5187', 'EPSG:5183', 'EPSG:5176')
+    _DONGBU = ('EPSG:5187', 'EPSG:5188', 'EPSG:5183', 'EPSG:5184', 'EPSG:5176')
     if x < 30000 and source_crs != 'WGS84' and source_crs not in _DONGBU:
         x *= 10
 
@@ -308,19 +314,15 @@ def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
     # --- GRS80 TM → WGS84 (순수 Python, 엑셀 수식) ---
     elif source_crs in _GRS80_EPSG:
         params = _PRESETS[source_crs]
-        easting, northing = (x, y) if x < y else (y, x)
         try:
-            lat, lon = tm_to_latlon(northing, easting, params)
-            lon_wgs84, lat_wgs84 = lon, lat
+            lon_wgs84, lat_wgs84 = _best_grs80_candidate(x, y, params)
         except Exception as e:
             logger.error(f'[GRS80 변환 실패: {borehole_id}] {e}')
 
     # --- Bessel TM → WGS84 (pyproj Helmert 변환) ---
     elif source_crs in _BESSEL_EPSG and _pyproj_ok:
-        easting, northing = (x, y) if x < y else (y, x)
         try:
-            lon_temp, lat_temp = _bessel_transformers[source_crs].transform(easting, northing)
-            lon_wgs84, lat_wgs84 = lon_temp, lat_temp
+            lon_wgs84, lat_wgs84 = _best_pyproj_candidate(x, y, _bessel_transformers[source_crs])
         except Exception as e:
             logger.error(f'[Bessel 변환 실패: {borehole_id}] {e}')
 
@@ -331,10 +333,8 @@ def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
         if 480000 <= northing_val <= 550000:
             logger.warning(f'[Ambiguous FN: {borehole_id}] Northing={northing_val:.0f} — {inferred} 추정')
         params = _PRESETS[inferred]
-        easting, northing = (x, y) if x < y else (y, x)
         try:
-            lat, lon = tm_to_latlon(northing, easting, params)
-            lon_wgs84, lat_wgs84 = lon, lat
+            lon_wgs84, lat_wgs84 = _best_grs80_candidate(x, y, params)
             final_epsg = inferred + '_INFERRED'
         except Exception as e:
             logger.error(f'[추정 CRS 변환 실패: {borehole_id}] {e}')
@@ -371,10 +371,12 @@ def _normalize_source_crs(source_crs, x=None, y=None):
         return None
 
     upper = text.upper().replace(" ", "")
-    epsg_match = re.search(r'EPSG[:\s-]*(51(?:7[456]|8[1367]))', upper)
+    if upper in {'EPSG:4326', 'EPSG4326', '4326'}:
+        return 'WGS84'
+    epsg_match = re.search(r'EPSG[:\s-]*(51(?:7[3469]|8[0-8]))', upper)
     if epsg_match:
         return f"EPSG:{epsg_match.group(1)}"
-    bare_epsg_match = re.search(r'\b(51(?:7[456]|8[1367]))\b', upper)
+    bare_epsg_match = re.search(r'\b(51(?:7[3469]|8[0-8]))\b', upper)
     if bare_epsg_match:
         return f"EPSG:{bare_epsg_match.group(1)}"
     if 'WGS84' in upper or 'WGS-84' in upper or '경위도' in text:
@@ -387,6 +389,7 @@ def _normalize_source_crs(source_crs, x=None, y=None):
 
     east_origin = '동부' in text
     west_origin = '서부' in text
+    east_sea_origin = '동해' in text
     false_600k = bool(re.search(r'60만|600,?000', text))
     false_500k = bool(re.search(r'50만|500,?000', text))
 
@@ -394,12 +397,22 @@ def _normalize_source_crs(source_crs, x=None, y=None):
         if east_origin:
             return 'EPSG:5176'
         if west_origin:
-            return 'EPSG:5175'
+            return 'EPSG:5173'
         return 'EPSG:5174'
 
+    if 'UTMK' in upper or 'UTM-K' in upper or '통합' in text:
+        return 'EPSG:5179'
     if false_600k:
+        if west_origin:
+            return 'EPSG:5185'
+        if east_sea_origin:
+            return 'EPSG:5188'
         return 'EPSG:5187' if east_origin else 'EPSG:5186'
     if false_500k:
+        if west_origin:
+            return 'EPSG:5180'
+        if east_sea_origin:
+            return 'EPSG:5184'
         return 'EPSG:5183' if east_origin else 'EPSG:5181'
 
     if x is not None and y is not None:
@@ -418,3 +431,66 @@ def _split_korean_tm_xy(x, y):
     if 100000 <= y_abs <= 300000 and x_abs >= 300000:
         return y_abs, x_abs
     return (x_abs, y_abs) if x_abs < y_abs else (y_abs, x_abs)
+
+
+def _is_korea_wgs84(lon, lat):
+    return lon is not None and lat is not None and 124.0 <= lon <= 132.0 and 33.0 <= lat <= 39.0
+
+
+def _coordinate_order_candidates(x, y):
+    """Return plausible (easting, northing) candidates without assuming x<y is always true."""
+    legacy = (float(x), float(y)) if float(x) < float(y) else (float(y), float(x))
+    pairs = [legacy, (float(x), float(y)), (float(y), float(x))]
+
+    ordered = []
+    seen = set()
+    for easting, northing in pairs:
+        key = (round(easting, 6), round(northing, 6))
+        if key in seen:
+            continue
+        ordered.append((easting, northing))
+        seen.add(key)
+    return ordered
+
+
+def _candidate_score(lon, lat):
+    if lon is None or lat is None:
+        return -1000
+    if not _is_korea_wgs84(lon, lat):
+        return -100
+    score = 10
+    try:
+        zone = _validator.classify(lon, lat)
+        if zone == 'hard':
+            score += 30
+        elif zone == 'soft':
+            score += 20
+        elif zone == 'out_of_region':
+            score += 5
+    except Exception:
+        pass
+    return score
+
+
+def _choose_best_candidate(candidates):
+    valid = [item for item in candidates if item[0] is not None and item[1] is not None]
+    if not valid:
+        return None, None
+    lon, lat, _score = max(valid, key=lambda item: item[2])
+    return lon, lat
+
+
+def _best_grs80_candidate(x, y, params):
+    candidates = []
+    for easting, northing in _coordinate_order_candidates(x, y):
+        lat, lon = tm_to_latlon(northing, easting, params)
+        candidates.append((lon, lat, _candidate_score(lon, lat)))
+    return _choose_best_candidate(candidates)
+
+
+def _best_pyproj_candidate(x, y, transformer):
+    candidates = []
+    for easting, northing in _coordinate_order_candidates(x, y):
+        lon, lat = transformer.transform(easting, northing)
+        candidates.append((lon, lat, _candidate_score(lon, lat)))
+    return _choose_best_candidate(candidates)

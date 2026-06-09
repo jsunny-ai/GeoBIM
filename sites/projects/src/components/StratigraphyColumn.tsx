@@ -1,8 +1,22 @@
-import { getStrataColor } from "@shared/strataColor"
+import { getStrataColor, normalizeStrataGroup } from "@shared/strataColor"
 import type { Borehole } from "@/lib/types"
 
 interface Props {
   borehole: Borehole
+}
+
+const STRATA_LABELS = {
+  soil: "토사",
+  weathered_rock: "풍화암",
+  soft_rock: "연암",
+  normal_rock: "보통암",
+  hard_rock: "경암",
+  unknown: "미분류",
+} as const
+
+function getStrataLabel(soilType: string) {
+  const group = normalizeStrataGroup(soilType)
+  return STRATA_LABELS[group] ?? soilType
 }
 
 export default function StratigraphyColumn({ borehole }: Props) {
@@ -43,7 +57,7 @@ export default function StratigraphyColumn({ borehole }: Props) {
                 style={{ top: `${top}%`, height: `${height}%`, backgroundColor: color }}
               >
                 <span className="text-xs font-medium text-slate-900 drop-shadow-sm select-none">
-                  {s.soil_type}
+                  {getStrataLabel(s.soil_type)}
                 </span>
               </div>
             )

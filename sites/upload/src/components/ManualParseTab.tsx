@@ -84,7 +84,7 @@ export function ManualParseTab({
       if (projectId !== "") form.append("project_id", String(projectId))
       form.append("pdf_file", file)
       if (lockedProjectId) form.append("is_supplementary", "true")
-      const created = await apiPostForm<ManualUpload>("/api/v1/pdf-extraction/manual-upload", form)
+      const created = await apiPostForm<ManualUpload>("/api/v1/pdf-extraction/manual/upload", form)
       setManualJob(created)
       setPageNumber(1)
       setBoxes([])

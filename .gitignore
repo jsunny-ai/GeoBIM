@@ -152,3 +152,7 @@ backend/cookies.txt
 backend/tile.jpg
 backend/test_tile.py
 backend/run_diagnose.bat
+
+# Database backups
+backend/db_backups/
+backend/*.dump

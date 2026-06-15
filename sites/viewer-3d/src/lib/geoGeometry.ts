@@ -221,16 +221,90 @@ export function buildSurfaceMesh(grid: number[][], boxW: number, boxD: number, m
   return geo
 }
 
+const SOLID_MESH_SUBDIVISIONS = 3
+const BOUNDARY_SMOOTH_PASSES = 1
+
+function resampleGridBilinear(grid: number[][], factor: number) {
+  if (factor <= 1) return grid
+
+  const sourceRows = grid.length
+  const sourceCols = grid[0]?.length ?? 0
+  if (sourceRows < 2 || sourceCols < 2) return grid
+
+  const targetRows = (sourceRows - 1) * factor + 1
+  const targetCols = (sourceCols - 1) * factor + 1
+
+  return Array.from({ length: targetRows }, (_, j) => {
+    const sy = j / factor
+    const j0 = Math.min(Math.floor(sy), sourceRows - 2)
+    const j1 = j0 + 1
+    const ty = sy - j0
+
+    return Array.from({ length: targetCols }, (__, i) => {
+      const sx = i / factor
+      const i0 = Math.min(Math.floor(sx), sourceCols - 2)
+      const i1 = i0 + 1
+      const tx = sx - i0
+      const v00 = grid[j0][i0]
+      const v10 = grid[j0][i1]
+      const v01 = grid[j1][i0]
+      const v11 = grid[j1][i1]
+      return v00 * (1 - tx) * (1 - ty) + v10 * tx * (1 - ty) + v01 * (1 - tx) * ty + v11 * tx * ty
+    })
+  })
+}
+
+function smoothGrid2D(grid: number[][], passes: number) {
+  if (passes <= 0) return grid
+
+  const rows = grid.length
+  const cols = grid[0]?.length ?? 0
+  if (rows < 3 || cols < 3) return grid
+
+  let current = grid.map((row) => row.slice())
+  for (let pass = 0; pass < passes; pass++) {
+    const next = current.map((row) => row.slice())
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        const center = current[j][i]
+        const left = current[j][Math.max(0, i - 1)]
+        const right = current[j][Math.min(cols - 1, i + 1)]
+        const up = current[Math.max(0, j - 1)][i]
+        const down = current[Math.min(rows - 1, j + 1)][i]
+        next[j][i] = center * 0.5 + (left + right + up + down) * 0.125
+      }
+    }
+    current = next
+  }
+  return current
+}
+
 export function buildLayerSolidGeometryData(
   topGrid: number[][],
   bottomGrid: number[][],
   boxW: number,
   boxD: number,
   mScale: number,
+  signedGrid?: number[][] | null,
   xGrid?: number[][] | Float32Array[] | any,
   zGrid?: number[][] | Float32Array[] | any
 ) {
+  // ── [v4.1] 핀치아웃 경계 서브셀 클리핑 (마칭 스퀘어) ─────────────────────
+  // 기존: 두께>EPS 꼭짓점이 하나라도 있는 셀을 통째로 렌더 → 경계가 격자 셀
+  // 단위 계단(지그재그)으로 잘림.
+  // 개선: 두께=EPS 등고선과 셀 변의 교차점을 선형보간으로 구해 경계 셀의
+  // 폴리곤을 등고선에서 잘라낸다. 두께장이 연속(TPS)이므로 잘린 면은 셀
+  // 내부를 지나는 매끄러운 폴리라인이 된다. 교차점은 top=bottom(두께≈0)
+  // 위치라 상·하면이 한 정점으로 용접되어 워터타이트가 유지된다.
+  topGrid = resampleGridBilinear(topGrid, SOLID_MESH_SUBDIVISIONS)
+  bottomGrid = resampleGridBilinear(bottomGrid, SOLID_MESH_SUBDIVISIONS)
+  signedGrid = signedGrid ? resampleGridBilinear(signedGrid, SOLID_MESH_SUBDIVISIONS) : signedGrid
+  const boundaryGrid = signedGrid ? smoothGrid2D(signedGrid, BOUNDARY_SMOOTH_PASSES) : null
+  xGrid = xGrid ? resampleGridBilinear(xGrid, SOLID_MESH_SUBDIVISIONS) : xGrid
+  zGrid = zGrid ? resampleGridBilinear(zGrid, SOLID_MESH_SUBDIVISIONS) : zGrid
+
   const Ny = topGrid.length, Nx = topGrid[0].length
+  const EPS = 0.001
   const xAt = (i: number, j: number) => {
     if (xGrid && xGrid[j]) return xGrid[j][i]
     return -boxW / 2 + (boxW * i) / (Nx - 1)
@@ -239,82 +313,113 @@ export function buildLayerSolidGeometryData(
     if (zGrid && zGrid[j]) return zGrid[j][i]
     return boxD / 2 - (boxD * j) / (Ny - 1)
   }
+  const th = (j: number, i: number) => topGrid[j][i] - bottomGrid[j][i]
+  // 경계 보간용 부호 있는 두께: 클램프 전 원시장(외곽에서 음수)을 쓰면
+  // 0두께 등고선의 셀 내부 위치를 정확히 복원할 수 있다. 없으면 실제 두께 사용
+  const sg = (j: number, i: number) => (boundaryGrid ? boundaryGrid[j][i] : th(j, i))
 
-  const positions: number[] = [], indices: number[] = []
+  const positions: number[] = []
+  const indices: number[] = []
+  const cache = new Map<string, number>()
 
-  // 1. 꼭지점(Vertices) 배열 구성
-  // 상부면 꼭지점 (인덱스: 0 ~ Nx*Ny - 1)
-  for (let j = 0; j < Ny; j++) {
-    for (let i = 0; i < Nx; i++) {
-      positions.push(xAt(i, j), topGrid[j][i] * mScale, zAt(j, i))
+  const addVert = (key: string, x: number, y: number, z: number) => {
+    let idx = cache.get(key)
+    if (idx === undefined) {
+      idx = positions.length / 3
+      positions.push(x, y, z)
+      cache.set(key, idx)
+    }
+    return idx
+  }
+  const topNode = (j: number, i: number) => addVert(`t${j}_${i}`, xAt(i, j), topGrid[j][i] * mScale, zAt(j, i))
+  const botNode = (j: number, i: number) => addVert(`b${j}_${i}`, xAt(i, j), bottomGrid[j][i] * mScale, zAt(j, i))
+
+  // 등고선(두께=EPS) 교차 정점 — 인접 셀이 같은 변을 공유하므로 캐시로 용접
+  const crossVert = (ja: number, ia: number, jb: number, ib: number) => {
+    const key = ja < jb || (ja === jb && ia < ib) ? `c${ja}_${ia}_${jb}_${ib}` : `c${jb}_${ib}_${ja}_${ia}`
+    let idx = cache.get(key)
+    if (idx === undefined) {
+      // signed장에 부호 변화가 있으면 그것으로(서브셀 정확), 아니면 실제 두께로 보간
+      const tha = sg(ja, ia), thb = sg(jb, ib)
+      let t = (EPS - tha) / ((thb - tha) || 1e-12)
+      t = Math.max(0, Math.min(1, t))
+      const x = xAt(ia, ja) + (xAt(ib, jb) - xAt(ia, ja)) * t
+      const z = zAt(ja, ia) + (zAt(jb, ib) - zAt(ja, ia)) * t
+      const yTop = topGrid[ja][ia] + (topGrid[jb][ib] - topGrid[ja][ia]) * t
+      const yBot = bottomGrid[ja][ia] + (bottomGrid[jb][ib] - bottomGrid[ja][ia]) * t
+      idx = positions.length / 3
+      positions.push(x, ((yTop + yBot) / 2) * mScale, z)
+      cache.set(key, idx)
+    }
+    return idx
+  }
+
+  const fan = (poly: number[], reverse: boolean) => {
+    for (let k = 1; k + 1 < poly.length; k++) {
+      const a = poly[0], b = poly[k], c = poly[k + 1]
+      if (a === b || b === c || a === c) continue
+      if (reverse) indices.push(a, c, b)
+      else indices.push(a, b, c)
     }
   }
-  // 하부면 꼭지점 (인덱스: Nx*Ny ~ 2*Nx*Ny - 1)
-  for (let j = 0; j < Ny; j++) {
-    for (let i = 0; i < Nx; i++) {
-      positions.push(xAt(i, j), bottomGrid[j][i] * mScale, zAt(j, i))
-    }
-  }
 
-  const offset = Nx * Ny
-
-  // 각 격자 좌표별 실제 지층 두께 계산 헬퍼
-  const getThick = (jj: number, ii: number) => topGrid[jj][ii] - bottomGrid[jj][ii]
-
-  // 2. 상/하부면 인덱스(삼각형) 생성
+  // ── 1. 셀 단위 상·하면 (경계 셀은 등고선 클리핑) ──────────────────────
   for (let j = 0; j < Ny - 1; j++) {
     for (let i = 0; i < Nx - 1; i++) {
-      const a = j * Nx + i, b = j * Nx + i + 1, c = (j + 1) * Nx + i, d = (j + 1) * Nx + i + 1
-      
-      // 네 꼭짓점의 지층 두께
-      const tA = getThick(j, i)
-      const tB = getThick(j, i + 1)
-      const tC = getThick(j + 1, i)
-      const tD = getThick(j + 1, i + 1)
-      
-      // 윗면 (두께가 있는 지점의 삼각형만 인덱스 빌드)
-      if (tA > 0.001 || tB > 0.001 || tD > 0.001) indices.push(a, b, d)
-      if (tA > 0.001 || tD > 0.001 || tC > 0.001) indices.push(a, d, c)
-      
-      // 아랫면 (두께가 있는 지점의 삼각형만 인덱스 빌드)
-      const ba = offset + a, bb = offset + b, bc = offset + c, bd = offset + d
-      if (tA > 0.001 || tD > 0.001 || tB > 0.001) indices.push(ba, bd, bb)
-      if (tA > 0.001 || tC > 0.001 || tD > 0.001) indices.push(ba, bc, bd)
+      // 꼭짓점 순서: (j,i) → (j,i+1) → (j+1,i+1) → (j+1,i)  — 기존 와인딩 유지
+      const cs: [number, number][] = [[j, i], [j, i + 1], [j + 1, i + 1], [j + 1, i]]
+      const pos = cs.map(([jj, ii]) => sg(jj, ii) > EPS)
+      if (!pos.some(Boolean)) continue
+
+      const polyT: number[] = []
+      const polyB: number[] = []
+      for (let k = 0; k < 4; k++) {
+        const k2 = (k + 1) % 4
+        if (pos[k]) {
+          polyT.push(topNode(cs[k][0], cs[k][1]))
+          polyB.push(botNode(cs[k][0], cs[k][1]))
+        }
+        if (pos[k] !== pos[k2]) {
+          const cv = crossVert(cs[k][0], cs[k][1], cs[k2][0], cs[k2][1])
+          polyT.push(cv)
+          polyB.push(cv)
+        }
+      }
+      if (polyT.length >= 3) {
+        fan(polyT, false) // 윗면
+        fan(polyB, true)  // 아랫면
+      }
     }
   }
 
-  // 3. 측면 테두리 벽(Side Skirts) 생성 (CCW 방향 정렬 완료)
-  // 상부 경계 (j = 0)
+  // ── 2. 모델 외곽 측면 벽 (경계 변도 교차점까지 부분 벽 생성) ──────────
+  const pushQuad = (a: number, b: number, c: number, d: number, flip: boolean) => {
+    const tri = (p1: number, p2: number, p3: number) => {
+      if (p1 === p2 || p2 === p3 || p1 === p3) return
+      indices.push(p1, p2, p3)
+    }
+    if (flip) { tri(a, d, c); tri(a, c, b) }
+    else      { tri(a, b, c); tri(a, c, d) }
+  }
+  const wallSeg = (jP: number, iP: number, jQ: number, iQ: number, flip: boolean) => {
+    const pPos = sg(jP, iP) > EPS
+    const qPos = sg(jQ, iQ) > EPS
+    if (!pPos && !qPos) return
+    // 사각형 (tP, bP, bQ, tQ) — 두께 0 쪽 끝은 교차 정점으로 수렴(삼각형화)
+    const cv = pPos !== qPos ? crossVert(jP, iP, jQ, iQ) : -1
+    const tP = pPos ? topNode(jP, iP) : cv
+    const bP = pPos ? botNode(jP, iP) : cv
+    const tQ = qPos ? topNode(jQ, iQ) : cv
+    const bQ = qPos ? botNode(jQ, iQ) : cv
+    pushQuad(tP, bP, bQ, tQ, flip)
+  }
   for (let i = 0; i < Nx - 1; i++) {
-    const tA = i, tB = i + 1
-    const bA = offset + tA, bB = offset + tB
-    if (getThick(0, i) > 0.001 || getThick(0, i + 1) > 0.001) {
-      indices.push(tA, bA, bB, tA, bB, tB)
-    }
+    wallSeg(0, i, 0, i + 1, false)            // 상부 경계 (j = 0)
+    wallSeg(Ny - 1, i, Ny - 1, i + 1, true)   // 하부 경계 (j = Ny-1)
   }
-  // 하부 경계 (j = Ny - 1)
-  for (let i = 0; i < Nx - 1; i++) {
-    const tA = (Ny - 1) * Nx + i, tB = (Ny - 1) * Nx + i + 1
-    const bA = offset + tA, bB = offset + tB
-    if (getThick(Ny - 1, i) > 0.001 || getThick(Ny - 1, i + 1) > 0.001) {
-      indices.push(tA, tB, bB, tA, bB, bA)
-    }
-  }
-  // 좌측 경계 (i = 0)
   for (let j = 0; j < Ny - 1; j++) {
-    const tA = j * Nx, tB = (j + 1) * Nx
-    const bA = offset + tA, bB = offset + tB
-    if (getThick(j, 0) > 0.001 || getThick(j + 1, 0) > 0.001) {
-      indices.push(tA, tB, bB, tA, bB, bA)
-    }
-  }
-  // 우측 경계 (i = Nx - 1)
-  for (let j = 0; j < Ny - 1; j++) {
-    const tA = j * Nx + Nx - 1, tB = (j + 1) * Nx + Nx - 1
-    const bA = offset + tA, bB = offset + tB
-    if (getThick(j, Nx - 1) > 0.001 || getThick(j + 1, Nx - 1) > 0.001) {
-      indices.push(tA, bA, bB, tA, bB, tB)
-    }
+    wallSeg(j, 0, j + 1, 0, true)             // 좌측 경계 (i = 0)
+    wallSeg(j, Nx - 1, j + 1, Nx - 1, false)  // 우측 경계 (i = Nx-1)
   }
 
   return { positions, indices }

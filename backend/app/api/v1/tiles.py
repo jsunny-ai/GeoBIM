@@ -34,6 +34,47 @@ _TILE_EXT: dict[str, str] = {
 
 # AWS Terrain Tiles — Terrarium 인코딩, API 키 불필요
 _TERRAIN_BASE = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium"
+_OSM_BASE = "https://tile.openstreetmap.org"
+
+
+async def _osm_base_tile(z: int, x: int, y: int) -> Response:
+    cache_path = CACHE_DIR / "osm" / str(z) / str(x) / f"{y}.png"
+    if cache_path.exists():
+        try:
+            content = cache_path.read_bytes()
+            if len(content) > 0:
+                return Response(
+                    content=content,
+                    media_type="image/png",
+                    headers={
+                        "Cache-Control": "public, max-age=86400, s-maxage=3600, stale-while-revalidate=604800",
+                        "X-Tile-Source": "OSM-Cache",
+                    },
+                )
+        except Exception:
+            pass
+
+    r = await http_client.get(
+        f"{_OSM_BASE}/{z}/{x}/{y}.png",
+        headers={"User-Agent": "GeoBIM-Stratum/0.1"},
+    )
+    if not r.is_success:
+        raise HTTPException(status_code=502, detail=f"OSM upstream HTTP {r.status_code}")
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    except Exception:
+        pass
+
+    return Response(
+        content=r.content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400, s-maxage=3600, stale-while-revalidate=604800",
+            "X-Tile-Source": "OSM",
+        },
+    )
 
 
 @router.get("/vworld/{layer}/{z}/{x}/{y}", name="vworld_tile")
@@ -53,6 +94,8 @@ async def vworld_tile(
 
     api_key = getattr(settings, "vworld_api_key", None)
     if not api_key:
+        if layer == "Base":
+            return await _osm_base_tile(z, x, y)
         raise HTTPException(status_code=500, detail="VWORLD_API_KEY 가 설정되지 않았습니다.")
 
     ext = _TILE_EXT[layer]
@@ -82,11 +125,17 @@ async def vworld_tile(
     try:
         r = await http_client.get(url, headers={"User-Agent": "GeoBIM-Stratum/0.1"})
     except httpx.TimeoutException:
+        if layer == "Base":
+            return await _osm_base_tile(z, x, y)
         raise HTTPException(status_code=504, detail="V-World 응답 시간 초과")
     except httpx.RequestError as e:
+        if layer == "Base":
+            return await _osm_base_tile(z, x, y)
         raise HTTPException(status_code=502, detail=f"V-World 요청 오류: {e}")
 
     if not r.is_success:
+        if layer == "Base":
+            return await _osm_base_tile(z, x, y)
         raise HTTPException(
             status_code=502,
             detail=f"V-World upstream HTTP {r.status_code}",
@@ -96,6 +145,8 @@ async def vworld_tile(
 
     # V-World가 XML 에러 문서를 반환하는 경우 차단
     if "xml" in response_content_type.lower() or r.content[:5] == b"<?xml":
+        if layer == "Base":
+            return await _osm_base_tile(z, x, y)
         raise HTTPException(status_code=404, detail="Tile not available (V-World returned XML error)")
 
     # 3. 수신 완료 시 로컬 디스크에 캐시 기록

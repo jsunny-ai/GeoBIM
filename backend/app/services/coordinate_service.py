@@ -1,25 +1,31 @@
-"""좌표계 변환 서비스 — Phase 2 에서 구현.
+"""Coordinate conversion service.
 
-책임:
-- 원본 좌표계(EPSG:5174~5187 한국 중부원점 시리즈) → WGS84(EPSG:4326) 변환
-- PDF_Convert 의 좌표계 자동 판별 로직 재사용 (또는 pyproj 직접 사용)
+The supported source CRS list intentionally follows the PDF upload workflow:
+WGS84, GRS80 central/east belts, and Bessel central/east belts only.
 """
 
 from __future__ import annotations
 
+from pdf_convert.core.coordinate_transformer import normalize_coordinates
+
 
 class CoordinateService:
-    """좌표계 변환.
+    """Convert source coordinates to WGS84 using the shared PDF conversion path."""
 
-    TODO(Phase 2):
-        - pyproj.Transformer 캐싱
-        - PDF_Convert 의 자동 판별 결과를 신뢰할지, 본 모듈에서 재검증할지 결정
-    """
-
-    def to_wgs84(self, x: float, y: float, source_epsg: str) -> tuple[float, float]:
-        """원본 좌표를 WGS84 (lon, lat) 로 변환."""
-        raise NotImplementedError("Phase 2 에서 구현")
+    def to_wgs84(self, x: float, y: float, source_epsg: str | None = None) -> tuple[float, float]:
+        """Convert source coordinates to WGS84 ``(lon, lat)``."""
+        lon, lat, _tm_x, _tm_y, _final_epsg = normalize_coordinates(
+            x,
+            y,
+            source_crs=source_epsg,
+        )
+        if lon == "" or lat == "":
+            raise ValueError("Could not convert coordinate to WGS84.")
+        return float(lon), float(lat)
 
     def detect_crs(self, x: float, y: float) -> str | None:
-        """좌표값으로부터 한국 좌표계 자동 판별."""
-        raise NotImplementedError("Phase 2 에서 구현")
+        """Infer a supported Korean CRS from coordinate values."""
+        lon, lat, _tm_x, _tm_y, final_epsg = normalize_coordinates(x, y, source_crs=None)
+        if lon == "" or lat == "" or final_epsg == "UNKNOWN":
+            return None
+        return final_epsg.replace("_INFERRED", "")

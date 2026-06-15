@@ -8,6 +8,7 @@ export function useBoreholeData(
   polygon: { lng: number; lat: number }[] | null,
   boreholeIds: number[],
   projectId?: number | null,
+  reloadKey: number = 0, // [v4.2] 수정 저장 후 재조회 트리거
 ) {
   const [boreholes, setBoreholes] = useState<Borehole[]>([])
   const [fetchStatus, setFetchStatus] = useState<"idle" | "loading" | "done" | "error">("idle")
@@ -72,7 +73,23 @@ export function useBoreholeData(
             }
           })
 
-        setBoreholes(normalized)
+        // [v4.2] 이상 심도 판정: 최대심도 > max(전체 중앙값×5, 100m)
+        // 판정된 시추공은 워커에서 두께 제어점 제외 + 경고 모달/배지 표시
+        const DEPTH_WARN_RATIO = 5
+        const DEPTH_WARN_MIN_M = 100
+        const depths = normalized.map((bb: any) =>
+          (bb.strata || []).reduce((m: number, st: any) => Math.max(m, st.depth_bottom || 0), 0),
+        )
+        const sortedDepths = [...depths].sort((x, y) => x - y)
+        const medianDepth = sortedDepths.length ? sortedDepths[Math.floor(sortedDepths.length / 2)] : 0
+        const depthLimit = Math.max(medianDepth * DEPTH_WARN_RATIO, DEPTH_WARN_MIN_M)
+        const flagged = normalized.map((bb: any, i: number) => ({
+          ...bb,
+          max_depth: depths[i],
+          depth_warning: depths[i] > depthLimit,
+        }))
+
+        setBoreholes(flagged)
         setFetchStatus("done")
       })
       .catch((e) => {
@@ -84,7 +101,7 @@ export function useBoreholeData(
     return () => {
       cancelled = true
     }
-  }, [bbox, polygon, boreholeIds, projectId])
+  }, [bbox, polygon, boreholeIds, projectId, reloadKey])
 
   return {
     boreholes,
@@ -126,3 +143,4 @@ function isInsidePolygon(lng: number, lat: number, polygon: { lng: number; lat: 
   }
   return inside
 }
+

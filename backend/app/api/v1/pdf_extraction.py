@@ -16,6 +16,7 @@ from app.api.deps import get_current_user, get_db
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
 from app.models import Borehole, ExtractionJobStatus, PdfExtractionJob, Project, User
+from app.services.pdf_path_resolver import resolve_pdf_path
 from app.services.pdf_service import PdfService
 from app.workers.pdf_tasks import auto_extract_task
 
@@ -267,7 +268,10 @@ async def render_job_page(
         raise HTTPException(status_code=422, detail="페이지 번호는 1 이상이어야 합니다.")
 
     try:
-        doc = fitz.open(job.file_path)
+        pdf_path = resolve_pdf_path(job.file_path)
+        if pdf_path is None or not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="원본 PDF 파일이 존재하지 않습니다.")
+        doc = fitz.open(str(pdf_path))
         if page_number > len(doc):
             raise HTTPException(status_code=404, detail="페이지를 찾을 수 없습니다.")
         page = doc[page_number - 1]

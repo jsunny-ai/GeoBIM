@@ -102,6 +102,8 @@ interface ViewerControlsProps {
   setVisibility: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
   showColumns: boolean
   setShowColumns: React.Dispatch<React.SetStateAction<boolean>>
+  basementMode: "extend" | "unknown"
+  setBasementMode: (mode: "extend" | "unknown") => void
 }
 
 export const ViewerControls: React.FC<ViewerControlsProps> = ({
@@ -119,6 +121,8 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
   setVisibility,
   showColumns,
   setShowColumns,
+  basementMode,
+  setBasementMode,
 }) => {
   return (
     <div style={panelStyle}>
@@ -291,10 +295,11 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
         <div style={{ fontSize: 12, color: C.tertiary, marginBottom: 6 }}>지층 표시 제어</div>
         {["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"].map((key) => {
           const on = visibility[key]
+          const disabled = key === "unknown" && basementMode === "extend" // 연장 모드: 미분류 없음
           return (
             <div
               key={key}
-              onClick={() => setVisibility((v) => ({ ...v, [key]: !v[key] }))}
+              onClick={disabled ? undefined : () => setVisibility((v) => ({ ...v, [key]: !v[key] }))}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -302,8 +307,8 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
                 margin: "3px 0",
                 padding: "2px 4px",
                 borderRadius: 4,
-                cursor: "pointer",
-                opacity: on ? 1 : 0.38,
+                cursor: disabled ? "default" : "pointer",
+                opacity: disabled ? 0.22 : on ? 1 : 0.38,
                 userSelect: "none",
               }}
             >
@@ -323,6 +328,40 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
             </div>
           )
         })}
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, marginBottom: 4 }}>미분류 구간 처리</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              onClick={() => setBasementMode("extend")}
+              style={{
+                ...(basementMode === "extend" ? segActive : segIdle),
+                lineHeight: "1.2",
+                padding: "4px 2px",
+                fontSize: 11,
+                flex: 1,
+              }}
+            >
+              연장
+              <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(Leapfrog)</span>
+            </button>
+            <button
+              onClick={() => setBasementMode("unknown")}
+              style={{
+                ...(basementMode === "unknown" ? segActive : segIdle),
+                lineHeight: "1.2",
+                padding: "4px 2px",
+                fontSize: 11,
+                flex: 1,
+              }}
+            >
+              미분류 유지
+              <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(조사 한계 표시)</span>
+            </button>
+          </div>
+          <div style={{ fontSize: 10, color: "#6a7a98", marginTop: 4, paddingLeft: 2 }}>
+            연장: 최심 관측 지층이 모델 바닥까지 동일 지층으로 이어집니다.
+          </div>
+        </div>
         <div style={{ fontSize: 10, color: "#6a7a98", marginTop: 6, paddingLeft: 4 }}>
           윗면 지도는 오버랩 표시 스위치로 독립 제어됩니다.
         </div>

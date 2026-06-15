@@ -271,6 +271,32 @@ class ProjectBoreholeOverride(Base, TimestampMixin):
     source_borehole: Mapped[Borehole] = relationship(back_populates="project_overrides")
 
 
+class BoreholeRevision(Base, TimestampMixin):
+    """시추공 개정 이력 — 원본 불변, 버전별 누적 (v4.2).
+
+    원본(boreholes/strata) = v0 으로 간주하며 절대 직접 수정하지 않는다.
+    수정할 때마다 version 1, 2, 3... 으로 누적되고, payload 는 해당 버전의
+    '완전한 스냅샷'({"elevation": float|None, "strata": [...]})이라 어떤 과거
+    버전도 그대로 열람할 수 있다. 복원 역시 새 버전으로 기록(restored_from)
+    되어 이력이 끊기지 않는다. effective 값 = 최신 버전 적용 결과.
+    """
+
+    __tablename__ = "borehole_revisions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    borehole_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("boreholes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_by_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    restored_from: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class PdfTemplate(Base, TimestampMixin):
     """PDF 박스 추출 템플릿.
 
@@ -358,6 +384,7 @@ __all__ = [
     "Borehole",
     "Stratum",
     "ProjectBoreholeOverride",
+    "BoreholeRevision",
     "PdfTemplate",
     "PdfExtractionJob",
 ]

@@ -261,3 +261,4 @@ export async function buildElevationGrid(
 
   return { elevGrid, gx, gy, terrainElevAt }
 }
+

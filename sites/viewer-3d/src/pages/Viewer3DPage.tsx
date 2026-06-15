@@ -1,5 +1,7 @@
 import { useRef, useState, useEffect } from "react"
 import { BoreholeTable } from "../components/BoreholeTable"
+import { DepthWarningModal } from "../components/DepthWarningModal"
+import { PdfComparePanel } from "../components/PdfComparePanel"
 import { ViewerControls, type Basemap } from "../components/ViewerControls"
 import { useBoreholeData } from "../hooks/useBoreholeData"
 import { useGeoModel, type GeoModelSettings } from "../hooks/useGeoModel"
@@ -65,6 +67,11 @@ export default function Viewer3DPage() {
   const [showColumns, setShowColumns] = useState(true)
   const [showDrape, setShowDrape] = useState(true)
   const [renderMode, setRenderMode] = useState<"smooth" | "voxel">("smooth")
+  const [basementMode, setBasementMode] = useState<"extend" | "unknown">("extend") // [v4] 미분류 구간 처리 (기본: 연장)
+  // [v4.2] 이상 심도 검증 워크플로우
+  const [reloadKey, setReloadKey] = useState(0)
+  const [compareBh, setCompareBh] = useState<(Borehole & { dem_elevation?: number }) | null>(null)
+  const [depthModalDismissed, setDepthModalDismissed] = useState(false)
   const [visibility, setVisibility] = useState<Record<string, boolean>>({
     soil: true,
     weathered_rock: true,
@@ -75,7 +82,7 @@ export default function Viewer3DPage() {
   })
 
   const { sceneRef, cameraRef, controlsRef } = useThreeScene(containerRef)
-  const { boreholes, fetchStatus, fetchErr } = useBoreholeData(bbox, polygon, boreholeIds, projectId)
+  const { boreholes, fetchStatus, fetchErr } = useBoreholeData(bbox, polygon, boreholeIds, projectId, reloadKey)
   const [bhState, setBhState] = useState<(Borehole & { dem_elevation?: number })[]>([])
 
   useEffect(() => {
@@ -148,6 +155,7 @@ export default function Viewer3DPage() {
     showColumns,
     showDrape,
     renderMode,
+    basementMode,
     selectedBh,
     setSelectedBh,
     setStatus,
@@ -218,6 +226,8 @@ export default function Viewer3DPage() {
               setVisibility={setVisibility}
               showColumns={showColumns}
               setShowColumns={setShowColumns}
+              basementMode={basementMode}
+              setBasementMode={setBasementMode}
             />
 
             <div style={hint}>
@@ -261,6 +271,27 @@ export default function Viewer3DPage() {
           setSelectedBh={setSelectedBh}
           focusBorehole={focusBorehole}
           onUpdateElevation={handleUpdateElevation}
+          onInspectData={(b) => setCompareBh(b)}
+        />
+      )}
+
+      {/* [v4.2] 이상 심도 경고 모달 → PDF 대조 검증 패널 */}
+      {!showLoadingOverlay && !showErrorOverlay && !depthModalDismissed && !compareBh &&
+        bhState.some((b) => (b as any).depth_warning) && (
+        <DepthWarningModal
+          warned={bhState.filter((b) => (b as any).depth_warning) as any}
+          onInspect={(b) => setCompareBh(b as any)}
+          onClose={() => setDepthModalDismissed(true)}
+        />
+      )}
+      {compareBh && (
+        <PdfComparePanel
+          borehole={compareBh as any}
+          onClose={() => setCompareBh(null)}
+          onSaved={() => {
+            setCompareBh(null)
+            setReloadKey((k) => k + 1) // 재조회 → 워커 자동 재계산 → 경고 재평가
+          }}
         />
       )}
     </div>

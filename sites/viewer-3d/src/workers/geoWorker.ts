@@ -15,6 +15,7 @@
 // =============================================================================
 import { buildElevationGrid, idwGrid } from "@/lib/terrain"
 import { buildLayerSolidGeometryData, type VoxelCell } from "../lib/geoGeometry"
+import { createLocalProjection } from "@/lib/projection"
 
 const LAYER_STACK = ["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"] as const
 const STRATA_KEYS = ["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock"] as const
@@ -210,10 +211,11 @@ self.onmessage = async (e: MessageEvent) => {
     // ── 0. 공통 파라미터 ─────────────────────────────────────────────────
     const NX = N
     const [minLng, minLat, maxLng, maxLat] = bbox
+    const projection = createLocalProjection(bbox, boxW)
     const midLat = (minLat + maxLat) / 2
     const cosLat = Math.cos((midLat * Math.PI) / 180)
-    const lngWidthM = (maxLng - minLng) * mPerDegLng(cosLat)
-    const latWidthM = (maxLat - minLat) * M_PER_DEG_LAT
+    const lngWidthM = projection.widthM
+    const latWidthM = projection.heightM
     const confRadiusM = Math.max(150, Math.min(400, Math.min(lngWidthM, latWidthM) * 0.5))
 
     // ── 1. 지표면 고도 격자 ───────────────────────────────────────────────
@@ -291,7 +293,8 @@ self.onmessage = async (e: MessageEvent) => {
     const MZ = Math.max(16, Math.min(96, Math.round(vRange / 1.2)))
     const dz = vRange / (MZ - 1)
     const idx3 = (i: number, j: number, l: number) => (l * NX + j) * NX + i
-    const label = new Int8Array(NX * NX * MZ)
+    const label = new Int8Array(NX * NX * MZ)    // 미분류 유지 모드
+    const labelExt = new Int8Array(NX * NX * MZ) // 연장 모드 (v4)
 
     // ── 3. 층별 '두께' 제어점 구성 (핀치아웃 처리 핵심) ──────────────────
     ;(self as any).postMessage({ type: "progress", step: "지층 두께 분석 및 2D 보간 중..." })
@@ -321,9 +324,17 @@ self.onmessage = async (e: MessageEvent) => {
           thick[seg.type as StrataKey] += seg.to - seg.from
           deepestRank = Math.max(deepestRank, rank[seg.type])
         }
-        return { x: b.longitude, y: b.latitude, elev: b.elevation, thick, deepestRank, segs }
+        return {
+          x: b.longitude, y: b.latitude, elev: b.elevation, thick, deepestRank, segs,
+          warn: Boolean(b.depth_warning), // [v4.2] 이상 심도 의심 (클라이언트 판정)
+        }
       })
       .filter((p) => p.segs.length > 0 && p.deepestRank >= 0)
+
+    // [v4.2] 이상 심도 시추공은 두께·연장 제어점에서 제외 (검토 전 안전장치).
+    // 표고(지표면 보정)에는 계속 사용한다. PDF 대조로 수정·저장되면 자동 복귀.
+    const okProfiles = profiles.filter((p) => !p.warn)
+    const skippedDeep = profiles.length - okProfiles.length
 
     // 제어점 규칙 — Leapfrog Vein 'Pinch out' 방식 (outside interval 등가):
     //   Leapfrog: 층이 없는 시추공에 'outside' 구간 생성 → 벽면 반전(flip)
@@ -340,9 +351,9 @@ self.onmessage = async (e: MessageEvent) => {
       soil: [], weathered_rock: [], soft_rock: [], normal_rock: [], hard_rock: [],
     }
     for (const key of STRATA_KEYS) {
-      const present = profiles.filter((p) => p.thick[key] > 0)
+      const present = okProfiles.filter((p) => p.thick[key] > 0)
       if (present.length === 0) continue // 어떤 시추공에도 없는 층 → 두께장 생성 안 함
-      for (const p of profiles) {
+      for (const p of okProfiles) {
         const t = p.thick[key]
         if (t > 0) {
           thickPts[key].push({ x: p.x, y: p.y, z: t })
@@ -351,9 +362,8 @@ self.onmessage = async (e: MessageEvent) => {
           let bestD2 = Infinity
           let refT = 0
           for (const q of present) {
-            const dx = (p.x - q.x) * mPerDegLng(cosLat)
-            const dy = (p.y - q.y) * M_PER_DEG_LAT
-            const d2 = dx * dx + dy * dy
+            const d = projection.distanceMeters({ lng: p.x, lat: p.y }, { lng: q.x, lat: q.y })
+            const d2 = d * d
             if (d2 < bestD2) { bestD2 = d2; refT = q.thick[key] }
           }
           thickPts[key].push({ x: p.x, y: p.y, z: -PINCH_STRENGTH * refT })
@@ -369,64 +379,190 @@ self.onmessage = async (e: MessageEvent) => {
     //  · 상한 클램프  = 외삽 폭주 방지 (시추공 영역 밖 TPS 발산 가드)
     //  · 후처리 스무딩 없음: TPS 자체가 C¹ 연속(최소 굽힘 에너지)이라 불필요.
     //    기존 Gaussian 4패스가 시추공 값 이탈의 주범이었음
-    const buildThicknessGrid = (points: GridPoint[]): number[][] => {
+    // raw(클램프 전, 외곽 음수) 함께 반환: 메쉬 경계의 서브셀 등고선 보간용
+    const buildThicknessGrid = (points: GridPoint[]): { grid: number[][]; raw: number[][] } => {
       if (points.length === 0 || points.every((p) => p.z <= 0)) {
-        return Array.from({ length: NX }, () => Array(NX).fill(0))
+        return {
+          grid: Array.from({ length: NX }, () => Array(NX).fill(0)),
+          raw: Array.from({ length: NX }, () => Array(NX).fill(-1)),
+        }
       }
       const raw = rbfGrid(points, gx, gy, 1)
       const tMax = points.reduce((m, p) => Math.max(m, p.z), 0)
       const cap = tMax * 2
-      return raw.map((row) => row.map((v) => Math.max(0, Math.min(v, cap))))
+      return { grid: raw.map((row) => row.map((v) => Math.max(0, Math.min(v, cap)))), raw }
     }
 
-    const thickGrids: Record<StrataKey, number[][]> = {
+    const thickRes = {
       soil: buildThicknessGrid(thickPts.soil),
       weathered_rock: buildThicknessGrid(thickPts.weathered_rock),
       soft_rock: buildThicknessGrid(thickPts.soft_rock),
       normal_rock: buildThicknessGrid(thickPts.normal_rock),
       hard_rock: buildThicknessGrid(thickPts.hard_rock),
     }
+    const thickGrids: Record<StrataKey, number[][]> = {
+      soil: thickRes.soil.grid, weathered_rock: thickRes.weathered_rock.grid,
+      soft_rock: thickRes.soft_rock.grid, normal_rock: thickRes.normal_rock.grid,
+      hard_rock: thickRes.hard_rock.grid,
+    }
+    const rawThick: Record<StrataKey, number[][]> = {
+      soil: thickRes.soil.raw, weathered_rock: thickRes.weathered_rock.raw,
+      soft_rock: thickRes.soft_rock.raw, normal_rock: thickRes.normal_rock.raw,
+      hard_rock: thickRes.hard_rock.raw,
+    }
 
-    // ── 4. 격자별 지층 경계 절대 고도 = 지표면 − Σ두께 ──────────────────
+    // ── 3b. [v4] 연장 두께장 E_k — 기존 기법의 재귀 적용 (구현계획서 §2.2) ──
+    // Leapfrog Background lithology: 최심부는 최심 관측 지층이 모델 바닥까지
+    // 채운다. 이를 시추공 지점 단위 제어점으로 표현:
+    //   · 최심 관측층이 k인 시추공 → E_k = max(0, 층 k 하단 고도 − 모델 바닥)
+    //   · 그 외 시추공            → 음수 더미 −EXT_PINCH × 최근접 양수 E_k
+    //     (더 깊은 층이 관측된 영역으로 연장이 침범하지 않도록 차단 — 핀치아웃과 동일)
+    // 보간·클램프는 관측 두께와 완전히 동일 (TPS λ≈0 + buildThicknessGrid)
+    //
+    // EXT_PINCH = 0.3 (관측 두께의 0.75보다 약하게): 연장 깊이(G, 수십 m)는
+    // 관측 두께(수 m)보다 한 자릿수 크므로, 같은 강도의 음수 더미는 전이폭을
+    // 과도하게 좁혀 급경사(≈18 m/m)를 만든다. 0.3으로 완화 시 E장들이 넓게
+    // 겹치며 비례 분배가 점진 전환 → 최대 경사 2.8 m/m (수치 실험 tune.mjs)
+    const EXT_PINCH = 0.3
+    const EXT_EPS = 0.001
+    const extAnchors = okProfiles.map((pr) => {
+      let cum = 0
+      for (let k = 0; k <= pr.deepestRank; k++) cum += pr.thick[STRATA_KEYS[k]]
+      return { x: pr.x, y: pr.y, deepest: pr.deepestRank, e: Math.max(0, pr.elev - cum - yBotM) }
+    })
+    const extPts: Record<StrataKey, GridPoint[]> = {
+      soil: [], weathered_rock: [], soft_rock: [], normal_rock: [], hard_rock: [],
+    }
+    for (let k = 0; k < STRATA_KEYS.length; k++) {
+      const key = STRATA_KEYS[k]
+      const present = extAnchors.filter((q) => q.deepest === k && q.e > 0)
+      if (present.length === 0) continue
+      for (const q of extAnchors) {
+        if (q.deepest === k && q.e > 0) {
+          extPts[key].push({ x: q.x, y: q.y, z: q.e })
+        } else {
+          let bestD2 = Infinity
+          let refE = 0
+          for (const r of present) {
+            const d = projection.distanceMeters({ lng: q.x, lat: q.y }, { lng: r.x, lat: r.y })
+            const d2 = d * d
+            if (d2 < bestD2) { bestD2 = d2; refE = r.e }
+          }
+          extPts[key].push({ x: q.x, y: q.y, z: -EXT_PINCH * refE })
+        }
+      }
+    }
+    const extRes = {
+      soil: buildThicknessGrid(extPts.soil),
+      weathered_rock: buildThicknessGrid(extPts.weathered_rock),
+      soft_rock: buildThicknessGrid(extPts.soft_rock),
+      normal_rock: buildThicknessGrid(extPts.normal_rock),
+      hard_rock: buildThicknessGrid(extPts.hard_rock),
+    }
+    const extGrids: Record<StrataKey, number[][]> = {
+      soil: extRes.soil.grid, weathered_rock: extRes.weathered_rock.grid,
+      soft_rock: extRes.soft_rock.grid, normal_rock: extRes.normal_rock.grid,
+      hard_rock: extRes.hard_rock.grid,
+    }
+    // 연장 모드 메쉬의 경계 보간용 signed장: 관측 + 연장 원시장의 합
+    // (τ = t + fill 의 소멸 경계와 부호 전환 위치가 일치)
+    const signedExt: Record<StrataKey, number[][]> = {} as any
+    for (const key of STRATA_KEYS) {
+      signedExt[key] = Array.from({ length: NX }, (_, j) =>
+        Array.from({ length: NX }, (__, i) => rawThick[key][j][i] + extRes[key].raw[j][i]),
+      )
+    }
+
+    // ── 4. 격자별 지층 경계 절대 고도 — 두 모드 동시 계산 (v4) ──────────
     // 두께 ≥ 0이 구조적으로 보장되므로 층 역전·수직 절벽이 발생할 수 없음
+    //   · 미분류 유지 모드: 경계면 = 지표면 − Σt, 시추 한계선 아래 = unknown
+    //   · 연장 모드: 유효 두께 τ = t + fill. fill = 잔여 깊이 G(시추 한계면 −
+    //     모델 바닥)를 연장 가중치 E_k 비례 분배 → Σfill = G 로 최하 경계가
+    //     정확히 모델 바닥(워터타이트). 모든 장이 연속 함수라 절벽 불가,
+    //     최심층 전이부는 교차 테이퍼(인터핑거링)로 이어짐 (구현계획서 §2.3)
     ;(self as any).postMessage({ type: "progress", step: "지층 경계면 고도 격자 계산 중..." })
 
-    const soilBottomGrid      = Array.from({ length: NX }, () => Array(NX).fill(0))
-    const weatheredBottomGrid = Array.from({ length: NX }, () => Array(NX).fill(0))
-    const softBottomGrid      = Array.from({ length: NX }, () => Array(NX).fill(0))
-    const normalBottomGrid    = Array.from({ length: NX }, () => Array(NX).fill(0))
-    const hardBottomGrid      = Array.from({ length: NX }, () => Array(NX).fill(0))
-    const boreholeBottomGrid  = Array.from({ length: NX }, () => Array(NX).fill(0))
+    const mkGrid = () => Array.from({ length: NX }, () => Array(NX).fill(0))
+    const soilBottomGrid = mkGrid(), weatheredBottomGrid = mkGrid(), softBottomGrid = mkGrid()
+    const normalBottomGrid = mkGrid(), hardBottomGrid = mkGrid(), boreholeBottomGrid = mkGrid()
+    const soilBottomExt = mkGrid(), weatheredBottomExt = mkGrid(), softBottomExt = mkGrid()
+    const normalBottomExt = mkGrid(), hardBottomExt = mkGrid()
+    const rawGGrid = mkGrid() // 미분류 두께(클램프 전) — wedge 경계 보간용
 
     for (let j = 0; j < NX; j++) {
       for (let i = 0; i < NX; i++) {
         const surfElev = elevGrid[j][i]
+        const tArr = STRATA_KEYS.map((key) => thickGrids[key][j][i])
 
-        const soilB      = surfElev - thickGrids.soil[j][i]
-        const weatheredB = soilB - thickGrids.weathered_rock[j][i]
-        const softB      = weatheredB - thickGrids.soft_rock[j][i]
-        const normalB    = softB - thickGrids.normal_rock[j][i]
-        const hardB      = normalB - thickGrids.hard_rock[j][i]
+        // ── 미분류 유지 모드 경계면 ──
+        // [v4.2] 모델 바닥(yBot) 클램프: 두께 합이 슬리브 깊이를 초과해도
+        // 경계면이 바닥을 관통하지 못하게 차단. max()는 단조 비증가 순서를
+        // 보존하므로 층 역전이 생기지 않고, 잘린 단면은 바닥 평면과 일치한다.
+        const soilB      = Math.max(surfElev - tArr[0], yBotM)
+        const weatheredB = Math.max(soilB - tArr[1], yBotM)
+        const softB      = Math.max(weatheredB - tArr[2], yBotM)
+        const normalB    = Math.max(softB - tArr[3], yBotM)
+        const hardB      = Math.max(normalB - tArr[4], yBotM)
         const boreholeB  = hardB
-
-        soilBottomGrid[j][i]      = soilB
+        soilBottomGrid[j][i] = soilB
         weatheredBottomGrid[j][i] = weatheredB
-        softBottomGrid[j][i]      = softB
-        normalBottomGrid[j][i]    = normalB
-        hardBottomGrid[j][i]      = hardB
-        boreholeBottomGrid[j][i]  = boreholeB
+        softBottomGrid[j][i] = softB
+        normalBottomGrid[j][i] = normalB
+        hardBottomGrid[j][i] = hardB
+        boreholeBottomGrid[j][i] = boreholeB
 
-        // 복셀 라벨 배열
+        // ── 연장 모드: G를 E_k 가중 분배 → 유효 두께 τ로 재적층 ──
+        rawGGrid[j][i] = boreholeB - yBotM
+        const G = Math.max(0, boreholeB - yBotM)
+        let deep = 0
+        for (let k = 0; k < tArr.length; k++) if (tArr[k] > EXT_EPS) deep = k
+        const wArr = STRATA_KEYS.map((key) => extGrids[key][j][i])
+        wArr[deep] += 1e-6 * Math.max(G, 1) // Σw=0 폴백: 최심 관측층 귀속
+        let sumW = 0
+        for (const w of wArr) sumW += w
+        const bExt: number[] = []
+        let acc = surfElev
+        for (let k = 0; k < tArr.length; k++) {
+          const fill = sumW > 0 ? (G * wArr[k]) / sumW : k === deep ? G : 0
+          acc = Math.max(acc - (tArr[k] + fill), yBotM) // [v4.2] 바닥 클램프
+          bExt.push(acc)
+        }
+        bExt[4] = yBotM // 워터타이트: 부동소수 누적 오차 제거
+        soilBottomExt[j][i] = bExt[0]
+        weatheredBottomExt[j][i] = bExt[1]
+        softBottomExt[j][i] = bExt[2]
+        normalBottomExt[j][i] = bExt[3]
+        hardBottomExt[j][i] = bExt[4]
+
+        // 연장 모드에서 τ>0인 최하층 (모델 바닥 복셀 귀속용)
+        let deepTau = 0
+        let prevB = surfElev
+        for (let k = 0; k < 5; k++) {
+          if (prevB - bExt[k] > 1e-9) deepTau = k
+          prevB = bExt[k]
+        }
+
+        // 복셀 라벨 (두 모드)
         for (let l = 0; l < MZ; l++) {
           const elev = yBotM + dz * l
           const index = idx3(i, j, l)
           if      (elev > surfElev)   label[index] = 0 // air
-          else if (elev > soilB)      label[index] = 1 // soil
-          else if (elev > weatheredB) label[index] = 2 // weathered_rock
-          else if (elev > softB)      label[index] = 3 // soft_rock
-          else if (elev > normalB)    label[index] = 4 // normal_rock
-          else if (elev > hardB)      label[index] = 5 // hard_rock
+          else if (elev > soilB)      label[index] = 1
+          else if (elev > weatheredB) label[index] = 2
+          else if (elev > softB)      label[index] = 3
+          else if (elev > normalB)    label[index] = 4
+          else if (elev > hardB)      label[index] = 5
           else                        label[index] = 6 // unknown
+
+          if (elev > surfElev) {
+            labelExt[index] = 0
+          } else {
+            let codeE = deepTau + 1
+            for (let k = 0; k < 5; k++) {
+              if (elev > bExt[k]) { codeE = k + 1; break }
+            }
+            labelExt[index] = codeE
+          }
         }
       }
     }
@@ -439,16 +575,34 @@ self.onmessage = async (e: MessageEvent) => {
 
     const flatBottomGrid = Array.from({ length: NX }, () => Array(NX).fill(yBotM))
 
-    const layerPairs: [string, number[][], number[][]][] = [
-      ["soil",           elevGrid,            soilBottomGrid],
-      ["weathered_rock", soilBottomGrid,      weatheredBottomGrid],
-      ["soft_rock",      weatheredBottomGrid, softBottomGrid],
-      ["normal_rock",    softBottomGrid,      normalBottomGrid],
-      ["hard_rock",      normalBottomGrid,    hardBottomGrid],
-      ["unknown",        boreholeBottomGrid,  flatBottomGrid],
+    const layerPairs: [string, number[][], number[][], number[][] | null][] = [
+      ["soil",           elevGrid,            soilBottomGrid,      rawThick.soil],
+      ["weathered_rock", soilBottomGrid,      weatheredBottomGrid, rawThick.weathered_rock],
+      ["soft_rock",      weatheredBottomGrid, softBottomGrid,      rawThick.soft_rock],
+      ["normal_rock",    softBottomGrid,      normalBottomGrid,    rawThick.normal_rock],
+      ["hard_rock",      normalBottomGrid,    hardBottomGrid,      rawThick.hard_rock],
+      ["unknown",        boreholeBottomGrid,  flatBottomGrid,      rawGGrid],
     ]
-    for (const [name, topGrid, bottomGrid] of layerPairs) {
-      const mesh = buildLayerSolidGeometryData(topGrid, bottomGrid, boxW, boxD, mScale)
+    for (const [name, topGrid, bottomGrid, signed] of layerPairs) {
+      const mesh = buildLayerSolidGeometryData(topGrid, bottomGrid, boxW, boxD, mScale, signed)
+      smoothMeshData[name] = {
+        positions: new Float32Array(mesh.positions),
+        indices: new Uint32Array(mesh.indices),
+      }
+    }
+
+    // ── 5b. [v4] 연장 모드 메쉬 — 동일 지층 단일 솔리드 (키: "<layer>@ext") ──
+    // 연장분이 유효 두께 τ에 흡수되어 있으므로 관측+연장이 한 덩어리이며,
+    // 색·재질도 관측 메쉬와 동일하게 렌더링된다 (뷰어에서 "@ext" → 원본 색 매핑)
+    const layerPairsExt: [string, number[][], number[][], number[][] | null][] = [
+      ["soil@ext",           elevGrid,           soilBottomExt,      signedExt.soil],
+      ["weathered_rock@ext", soilBottomExt,      weatheredBottomExt, signedExt.weathered_rock],
+      ["soft_rock@ext",      weatheredBottomExt, softBottomExt,      signedExt.soft_rock],
+      ["normal_rock@ext",    softBottomExt,      normalBottomExt,    signedExt.normal_rock],
+      ["hard_rock@ext",      normalBottomExt,    hardBottomExt,      signedExt.hard_rock],
+    ]
+    for (const [name, topGrid, bottomGrid, signed] of layerPairsExt) {
+      const mesh = buildLayerSolidGeometryData(topGrid, bottomGrid, boxW, boxD, mScale, signed)
       smoothMeshData[name] = {
         positions: new Float32Array(mesh.positions),
         indices: new Uint32Array(mesh.indices),
@@ -482,6 +636,30 @@ self.onmessage = async (e: MessageEvent) => {
       }
     }
 
+    // [v4] 연장 모드 복셀 (labelExt RLE → "<layer>@ext" 키)
+    for (let j = 0; j < NX; j++) {
+      for (let i = 0; i < NX; i++) {
+        const cx = -boxW / 2 + (boxW * i) / (NX - 1)
+        const cz = boxD / 2 - (boxD * j) / (NX - 1)
+        let l = 0
+        while (l < MZ) {
+          const code = labelExt[idx3(i, j, l)]
+          if (code === 0) { l++; continue }
+          let l2 = l
+          while (l2 < MZ && labelExt[idx3(i, j, l2)] === code) l2++
+          const extKey = `${LAYER_STACK[code - 1]}@ext`
+          if (!voxelCells[extKey]) voxelCells[extKey] = []
+          voxelCells[extKey].push({
+            x0: cx - cellW / 2, x1: cx + cellW / 2,
+            z0: cz - cellD / 2, z1: cz + cellD / 2,
+            yBot: (yBotM + dz * (l - 0.5)) * mScale,
+            yTop: (yBotM + dz * (l2 - 0.5)) * mScale,
+          })
+          l = l2
+        }
+      }
+    }
+
     const transferBuffers: ArrayBuffer[] = []
     for (const type of Object.keys(smoothMeshData)) {
       transferBuffers.push(smoothMeshData[type].positions.buffer as ArrayBuffer)
@@ -495,6 +673,7 @@ self.onmessage = async (e: MessageEvent) => {
         smoothMeshData,
         voxelCells,
         dz, yBotM, gTop, MZ, confRadiusM, lngWidthM, latWidthM,
+        skippedDeep, // [v4.2] 이상 심도로 제어점에서 제외된 시추공 수
       },
       transferBuffers,
     )

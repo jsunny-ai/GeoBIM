@@ -14,6 +14,7 @@ from typing import List, Dict, Tuple
 from pdf_convert.parsers.hwpx_converter import batch_convert_docx_to_hwpx
 from pdf_convert.parsers.hwp_indexed_extractor import (
     clean_float,
+    extract_depth_values,
     extract_crs_from_page,
     extract_project_name_from_pdf,
     normalize_bh_id,
@@ -161,9 +162,12 @@ class MasterHybridExtractor:
             # 메타데이터를 원시 데이터에 덮어쓰기
             for row in raw_data:
                 row["프로젝트명"] = project_name
-                row["경도"] = meta.get("경도", row["경도"])
-                row["위도"] = meta.get("위도", row["위도"])
-                row["표고"] = meta.get("표고", row["표고"])
+                if self._is_missing_metadata_value(row.get("경도")):
+                    row["경도"] = meta.get("경도", row.get("경도"))
+                if self._is_missing_metadata_value(row.get("위도")):
+                    row["위도"] = meta.get("위도", row.get("위도"))
+                if self._is_missing_metadata_value(row.get("표고")):
+                    row["표고"] = meta.get("표고", row.get("표고"))
                 row["meta_crs"] = meta.get("meta_crs", None)
         else:
             logger.info(f"   ㄴ [Tier 2] 결측치 없음 (통과)")
@@ -344,8 +348,9 @@ class MasterHybridExtractor:
             for row_idx in range(2, len(df1)):
                 row_data = df1.iloc[row_idx]
                 if len(row_data) < 5: continue
-                depth = clean_float(str(row_data.iloc[0]))
-                if depth is None: continue
+                depth_values = extract_depth_values(str(row_data.iloc[0]))
+                if not depth_values: continue
+                depth = depth_values[-1]
                 strata = normalize_strata(str(row_data.iloc[4]))
                 
                 raw_rows.append({
@@ -369,6 +374,13 @@ class MasterHybridExtractor:
 
     def _needs_fallback(self, meta: Dict) -> bool:
         return any(v == "N/A" for v in meta.values())
+
+    @staticmethod
+    def _is_missing_metadata_value(value) -> bool:
+        if value is None:
+            return True
+        text = str(value).strip()
+        return text == "" or text.upper() in {"N/A", "UNKNOWN", "NONE", "NULL"}
 
     def _tier2_spatial_recovery(self, pdf_path: str, current_meta: Dict) -> Dict:
         """PyMuPDF 공간 유클리드 거리 폴백 (Tier 2)"""

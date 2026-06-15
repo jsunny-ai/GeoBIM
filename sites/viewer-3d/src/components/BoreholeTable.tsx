@@ -58,6 +58,7 @@ interface BoreholeTableProps {
   setSelectedBh: (id: string | null) => void
   focusBorehole: (id: string) => void
   onUpdateElevation?: (bhId: string, newElev: number) => Promise<void>
+  onInspectData?: (b: Borehole & { dem_elevation?: number }) => void // [v4.2] PDF 대조 패널 열기
 }
 
 export const BoreholeTable: React.FC<BoreholeTableProps> = ({
@@ -66,6 +67,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
   setSelectedBh,
   focusBorehole,
   onUpdateElevation,
+  onInspectData,
 }) => {
   const [filterMode, setFilterMode] = useState<"all" | "warn" | "edited">("all")
   const [editingBhId, setEditingBhId] = useState<string | null>(null)
@@ -106,15 +108,19 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
     return { dem, delta, diff, severity }
   }, [])
 
+  // [v4.2] 이상 심도·개정 상태 헬퍼
+  const isDepthWarn = (b: Borehole) => Boolean((b as any).depth_warning)
+  const isRevised = (b: Borehole) => (b as any).data_status === "revised"
+
   // 2. 필터링 대상 시추공 분류
   const filteredBoreholes = boreholes.filter((b) => {
     const { diff } = getElevationInfo(b)
-    if (filterMode === "warn") return diff >= 0.5
-    if (filterMode === "edited") return editLogs[b.id] !== undefined
+    if (filterMode === "warn") return diff >= 0.5 || isDepthWarn(b)
+    if (filterMode === "edited") return editLogs[b.id] !== undefined || isRevised(b)
     return true
   })
 
-  const warnCount = boreholes.filter((b) => getElevationInfo(b).diff >= 0.5).length
+  const warnCount = boreholes.filter((b) => getElevationInfo(b).diff >= 0.5 || isDepthWarn(b)).length
 
   const handleStartEdit = (b: Borehole & { dem_elevation?: number }, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -214,7 +220,9 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
               
               // 심각도 아이콘 점 렌더링
               let badgeDot = null
-              if (severity === "critical") {
+              if (isDepthWarn(b)) {
+                badgeDot = <span title={`⚠️ 심도 이상 의심: ${depth.toFixed(1)}m — 심도 클릭 시 PDF 대조 확인`} style={{ display: "inline-block", width: 8, height: 8, background: "#7c3aed", borderRadius: "50%", marginRight: 5, animation: "pulse 1.5s infinite" }} />
+              } else if (severity === "critical") {
                 badgeDot = <span title={`🚨 표고 심각한 오차: ${diff.toFixed(2)}m (DEM: ${dem.toFixed(1)}m)`} style={{ display: "inline-block", width: 8, height: 8, background: C.warnCr, borderRadius: "50%", marginRight: 5, animation: "pulse 1.5s infinite" }} />
               } else if (severity === "major") {
                 badgeDot = <span title={`🔴 표고 요주의 오차: ${diff.toFixed(2)}m (DEM: ${dem.toFixed(1)}m)`} style={{ display: "inline-block", width: 7, height: 7, background: C.warnRd, borderRadius: "50%", marginRight: 5 }} />
@@ -241,6 +249,9 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                     <td style={{ ...tdStyle, fontWeight: sel ? 700 : 400, display: "flex", alignItems: "center" }}>
                       {badgeDot}
                       <span style={{ textDecoration: isEdited ? "underline" : "none" }}>{b.name}</span>
+                      {isRevised(b) && (
+                        <span title={`✎ 수정됨 (v${(b as any).revision_version ?? "?"}) — 원본 보존`} style={{ color: "#10b981", marginLeft: 3, fontSize: 10 }}>✎</span>
+                      )}
                     </td>
                     <td style={tdNumStyle}>
                       <span
@@ -257,7 +268,19 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                         {b.elevation?.toFixed(1)}
                       </span>
                     </td>
-                    <td style={tdNumStyle}>{depth.toFixed(1)}</td>
+                    <td style={tdNumStyle}>
+                      {isDepthWarn(b) && onInspectData ? (
+                        <span
+                          onClick={(e) => { e.stopPropagation(); onInspectData(b) }}
+                          title="심도 이상 의심 — 클릭하여 원본 PDF와 대조 확인"
+                          style={{ color: "#7c3aed", borderBottom: "1px dashed #7c3aed", cursor: "pointer", fontWeight: 700 }}
+                        >
+                          {depth.toFixed(1)}
+                        </span>
+                      ) : (
+                        depth.toFixed(1)
+                      )}
+                    </td>
                     <td style={tdStyle}>
                       {uniqueLayerGroups(b).map((grp, i) => {
                         const rgbNum = LAYER_COLOR[grp] ?? LAYER_COLOR.unknown

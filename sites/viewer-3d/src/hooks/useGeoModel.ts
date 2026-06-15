@@ -5,6 +5,7 @@ import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
 import { buildAreaCanvas } from "@/lib/terrain"
 import { buildBoxesMesh, buildSurfaceMesh } from "../lib/geoGeometry"
+import { createLocalProjection, type Bbox } from "@/lib/projection"
 import type { Borehole } from "@/lib/types"
 
 const LAYER_COLOR: Record<string, number> = {
@@ -24,6 +25,7 @@ export interface GeoModelSettings {
   showColumns: boolean
   showDrape: boolean
   renderMode: "smooth" | "voxel"
+  basementMode: "extend" | "unknown"
   selectedBh: string | null
   setSelectedBh: (id: string | null) => void
   setStatus: (msg: string) => void
@@ -31,6 +33,16 @@ export interface GeoModelSettings {
 }
 
 const LAYER_STACK = ["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"]
+
+// [v4] 표시 규칙 — 미분류 구간 처리 세그먼트 토글:
+//   연장 모드("extend")   → "@ext" 메쉬 5개만 표시 (연장분이 흡수된 단일 솔리드)
+//   미분류 유지("unknown") → 관측 메쉬 5개 + 미분류 회색 솔리드 표시
+const layerVisible = (type: string, vis: Record<string, boolean>, mode: "extend" | "unknown") => {
+  const isExt = type.endsWith("@ext")
+  const base = isExt ? type.slice(0, -4) : type
+  if (mode === "extend") return isExt && (vis[base] ?? true)
+  return !isExt && (vis[type] ?? true)
+}
 const LAYER_SETS: Record<GeoModelSettings["basemap"], string[]> = {
   Base: ["Base"],
   Satellite: ["Satellite"],
@@ -51,7 +63,7 @@ export function useGeoModel(
   const smoothMeshRef = useRef<Record<string, THREE.Mesh>>({})
   const voxelMeshRef = useRef<Record<string, THREE.Mesh>>({})
   const drapeRef = useRef<THREE.Mesh | null>(null)
-  const drapeMatRef = useRef<THREE.MeshStandardMaterial | null>(null)
+  const drapeMatRef = useRef<THREE.MeshBasicMaterial | null>(null)
   const bhGroupRef = useRef<THREE.Group | null>(null)
   const markerRef = useRef<THREE.Mesh | null>(null)
   const stratumGroupRef = useRef<THREE.Group | null>(null)
@@ -68,6 +80,7 @@ export function useGeoModel(
     showColumns,
     showDrape,
     renderMode,
+    basementMode,
     selectedBh,
     setSelectedBh,
     setStatus,
@@ -78,6 +91,7 @@ export function useGeoModel(
   const showColumnsRef = useRef(showColumns)
   const showDrapeRef = useRef(showDrape)
   const renderModeRef = useRef(renderMode)
+  const basementModeRef = useRef(basementMode)
   const basemapRef = useRef(basemap)
   const verticalExagRef = useRef(verticalExag)
 
@@ -85,6 +99,7 @@ export function useGeoModel(
   showColumnsRef.current = showColumns
   showDrapeRef.current = showDrape
   renderModeRef.current = renderMode
+  basementModeRef.current = basementMode
   basemapRef.current = basemap
   verticalExagRef.current = verticalExag
 
@@ -153,18 +168,16 @@ export function useGeoModel(
     }
     stratumGroup.scale.set(1, verticalExagRef.current, 1)
 
-    const [minLng, minLat, maxLng, maxLat] = bbox
-    const midLat = (minLat + maxLat) / 2
-    const lngWidthM = (maxLng - minLng) * 111320 * Math.cos((midLat * Math.PI) / 180)
-    const latWidthM = (maxLat - minLat) * 110540
-    const ratio = lngWidthM / latWidthM
-    const boxW = 2
-    const boxD = boxW / ratio
-    const mScale = boxW / lngWidthM
+    const projection = createLocalProjection(bbox as Bbox)
+    const lngWidthM = projection.widthM
+    const latWidthM = projection.heightM
+    const boxW = projection.modelWidth
+    const boxD = projection.modelDepth
+    const mScale = projection.metersToModel
     dimsRef.current = { boxW, boxD, lngWidthM, latWidthM, mScale }
 
-    const lngToX = (lng: number) => -boxW / 2 + (boxW * (lng - minLng)) / (maxLng - minLng)
-    const latToZ = (lat: number) => boxD / 2 - (boxD * (lat - minLat)) / (maxLat - minLat)
+    const lngToX = (lng: number, lat: number) => projection.lngLatToModel(lng, lat).x
+    const latToZ = (lng: number, lat: number) => projection.lngLatToModel(lng, lat).z
 
     const fitCamera = () => {
       const cam = cameraRef.current
@@ -207,7 +220,7 @@ export function useGeoModel(
     const worker = new Worker(new URL("../workers/geoWorker.ts", import.meta.url), { type: "module" })
     workerRef.current = worker
 
-    const N = 144
+    const N = 192
     worker.postMessage({
       boreholes,
       bbox,
@@ -244,12 +257,12 @@ export function useGeoModel(
         confRadiusM,
         lngWidthM: resultLngWidthM,
         latWidthM: resultLatWidthM,
+        skippedDeep,
       } = msg
 
       const drapeGeo = buildSurfaceMesh(elevGrid, boxW, boxD, mScale)
-      const drapeMat = new THREE.MeshStandardMaterial({
+      const drapeMat = new THREE.MeshBasicMaterial({
         color: 0x4e6e58,
-        roughness: 0.85,
         side: THREE.DoubleSide,
         polygonOffset: true,
         polygonOffsetFactor: -2,
@@ -301,13 +314,16 @@ export function useGeoModel(
         geo.computeVertexNormals()
 
         // 지층 퇴적 순서(s)에 따라 계단식 polygonOffset을 부여하여 겹치는 구역의 Z-Fighting을 원천 차단
-        const s = LAYER_STACK.indexOf(type as any)
+        // "@ext" = 연장 모드 메쉬 — 연장분이 유효 두께에 흡수된 동일 지층이므로 관측 메쉬와 동일 재질
+        const baseType = type.endsWith("@ext") ? type.slice(0, -4) : type
+        const s = LAYER_STACK.indexOf(baseType as any)
+        const baseOpacity = 0.68
         const mat = new THREE.MeshStandardMaterial({
-          color: LAYER_COLOR[type] ?? LAYER_COLOR.unknown,
+          color: LAYER_COLOR[baseType] ?? LAYER_COLOR.unknown,
           roughness: 0.92,
           side: THREE.DoubleSide,
           transparent: true,
-          opacity: 0.68,
+          opacity: baseOpacity,
           depthWrite: false,
           polygonOffset: true,
           polygonOffsetFactor: (s >= 0 ? s + 1 : 1) * 1.5,
@@ -315,22 +331,25 @@ export function useGeoModel(
         })
         const mesh = new THREE.Mesh(geo, mat)
         mesh.userData.layerType = type
+        mesh.userData.baseOpacity = baseOpacity
         stratumGroup.add(mesh)
         smoothMeshes[type] = mesh
       }
       smoothMeshRef.current = smoothMeshes
 
       const voxelMeshes: Record<string, THREE.Mesh> = {}
-      for (const type of LAYER_STACK) {
+      for (const type of Object.keys(voxelCells)) {
         const cells = voxelCells[type]
         if (!cells?.length) continue
+        const baseType = type.endsWith("@ext") ? type.slice(0, -4) : type
         const mat = new THREE.MeshStandardMaterial({
-          color: LAYER_COLOR[type] ?? LAYER_COLOR.unknown,
+          color: LAYER_COLOR[baseType] ?? LAYER_COLOR.unknown,
           roughness: 0.92,
           side: THREE.DoubleSide,
         })
         const mesh = new THREE.Mesh(buildBoxesMesh(cells), mat)
         mesh.userData.layerType = type
+        mesh.userData.baseOpacity = 1.0
         stratumGroup.add(mesh)
         voxelMeshes[type] = mesh
       }
@@ -338,7 +357,7 @@ export function useGeoModel(
 
       const applyVis = (meshes: Record<string, THREE.Mesh>, activeMode: boolean) => {
         for (const [type, mesh] of Object.entries(meshes)) {
-          mesh.visible = activeMode && (visibilityRef.current[type] ?? true)
+          mesh.visible = activeMode && layerVisible(type, visibilityRef.current, basementModeRef.current)
         }
       }
       applyVis(smoothMeshes, renderModeRef.current === "smooth")
@@ -349,8 +368,8 @@ export function useGeoModel(
       const posMap: Record<string, { x: number; y: number; z: number }> = {}
       for (const b of boreholes) {
         if (!Number.isFinite(b.longitude) || !Number.isFinite(b.latitude) || !Number.isFinite(b.elevation)) continue
-        const bx = lngToX(b.longitude)
-        const bz = latToZ(b.latitude)
+        const bx = lngToX(b.longitude, b.latitude)
+        const bz = latToZ(b.longitude, b.latitude)
 
         // 쌍선형 보간(Bilinear Interpolation)을 통해 시추공 위치의 정밀 지표면 고도(surfElev) 계산
         const [minLng, minLat, maxLng, maxLat] = bbox
@@ -403,7 +422,8 @@ export function useGeoModel(
       fitCamera()
       setStatus(
         `완료 · 시추공 ${boreholes.length}개 · 격자 ${N}x${N}x${MZ} (dz ${dz.toFixed(1)}m) · ` +
-          `유효 반경 ${confRadiusM.toFixed(0)}m · 영역 ${resultLngWidthM.toFixed(0)}m x ${resultLatWidthM.toFixed(0)}m`,
+          `유효 반경 ${confRadiusM.toFixed(0)}m · 영역 ${resultLngWidthM.toFixed(0)}m x ${resultLatWidthM.toFixed(0)}m` +
+          (skippedDeep > 0 ? ` · ⚠️ 심도 이상 ${skippedDeep}공 보간 제외 — 확인 필요` : ""),
       )
     }
 
@@ -422,7 +442,7 @@ export function useGeoModel(
   useEffect(() => {
     const apply = (meshes: Record<string, THREE.Mesh>, activeMode: boolean) => {
       for (const [type, mesh] of Object.entries(meshes)) {
-        mesh.visible = activeMode && (visibility[type] ?? true)
+        mesh.visible = activeMode && layerVisible(type, visibility, basementMode)
       }
     }
     apply(smoothMeshRef.current, renderMode === "smooth")
@@ -440,7 +460,7 @@ export function useGeoModel(
     if (drape) {
       drape.visible = showDrape
     }
-  }, [visibility, renderMode, showColumns, showDrape])
+  }, [visibility, renderMode, showColumns, showDrape, basementMode])
 
   useEffect(() => {
     if (drapeRef.current) drapeRef.current.visible = showDrape
@@ -475,9 +495,10 @@ export function useGeoModel(
       // 선택 해제 → 지층 불투명 복원
       for (const mesh of allLayerMeshes) {
         const mat = mesh.material as THREE.MeshStandardMaterial
-        mat.transparent = true
-        mat.opacity = 0.68
-        mat.depthWrite = false
+        const base = (mesh.userData.baseOpacity as number) ?? 0.68
+        mat.transparent = base < 1
+        mat.opacity = base
+        mat.depthWrite = base >= 1
         mat.needsUpdate = true
       }
       return
@@ -497,9 +518,10 @@ export function useGeoModel(
       marker.visible = false
       return
     }
-    const { boxW, boxD, mScale } = dimsRef.current
-    const bx = -boxW / 2 + (boxW * (b.longitude - bbox[0])) / (bbox[2] - bbox[0])
-    const bz = boxD / 2 - (boxD * (b.latitude - bbox[1])) / (bbox[3] - bbox[1])
+    const { mScale } = dimsRef.current
+    const pModel = createLocalProjection(bbox as Bbox).lngLatToModel(b.longitude, b.latitude)
+    const bx = pModel.x
+    const bz = pModel.z
     const p = bhPosRef.current?.[b.id]
     const by = p ? p.y : (b.elevation || 0) * mScale * verticalExag
     marker.position.set(bx, by + 0.05, bz)

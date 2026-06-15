@@ -58,6 +58,29 @@ def normalize_strata(raw_text):
     return normalize_strata_name(text)
 
 
+def extract_depth_values(raw_depth):
+    """심도 셀에서 줄바꿈/공백으로 분리된 복수 숫자를 보존해 추출.
+
+    PyMuPDF find_tables()가 상/하 심도를 한 셀로 합치는 경우가 있다.
+    예: "25\n30.5"를 일반 clean_float()에 바로 넣으면 "2530.5"가 되므로,
+    심도 컬럼에서는 숫자 토큰을 먼저 분리한 뒤 마지막 값을 하심도로 사용한다.
+    """
+    if raw_depth is None:
+        return []
+
+    text = unicodedata.normalize("NFKC", str(raw_depth))
+    text = text.replace("O", "0").replace("o", "0")
+    values = []
+    for match in re.finditer(r"[-+]?(?:\d+(?:[,.]\d+)?|[,.]\s*\d+)", text):
+        token = re.sub(r"\s+", "", match.group(0)).replace(",", ".")
+        if token.startswith("."):
+            token = "0" + token
+        value = clean_float(token)
+        if value is not None:
+            values.append(value)
+    return values
+
+
 def extract_project_info(filename):
     """파일명에서 프로젝트 정보 추출 (예: page1_project1_report.pdf → PJ_1-1)"""
     page_match = re.search(r'page(\d+)', filename, re.IGNORECASE)
@@ -200,8 +223,9 @@ def extract_crs_from_page(page_text=None, page=None):
 
     # 원점: 중부, 동부, 서부
     origin = "중부"
+    if "서부" in header or "동해" in header:
+        return None
     if "동부" in header: origin = "동부"
-    elif "서부" in header: origin = "서부"
 
     # 가산북치: 50만, 60만
     has_500k = re.search(r'50만|500,000|500000', header)
@@ -213,7 +237,6 @@ def extract_crs_from_page(page_text=None, page=None):
             if has_500k: return "EPSG:5183"
             if has_600k: return "EPSG:5187"
             return None  # 가산값 불명 -> 후행 판정
-        if origin == "서부": return "EPSG:5185"
         # 중부 기본
         if has_500k: return "EPSG:5181"
         if has_600k: return "EPSG:5186"
@@ -221,7 +244,6 @@ def extract_crs_from_page(page_text=None, page=None):
         
     if ellipsoid == "BESSEL":
         if origin == "동부": return "EPSG:5176"
-        if origin == "서부": return "EPSG:5175"
         return "EPSG:5174" # 중부 기본
 
     return None
@@ -346,9 +368,10 @@ def process_single_pdf_indexed(pdf_path, project_name=None):
                 if len(row) < 5:
                     continue
                 
-                depth = clean_float(row[0])   # Col 0: 하심도
-                if depth is None:
+                depth_values = extract_depth_values(row[0])   # Col 0: 하심도
+                if not depth_values:
                     continue  # 빈 행(SPT 반복행) 스킵
+                depth = depth_values[-1]
                 
                 strata_raw = row[4] if row[4] else ""  # Col 4: 지층명
                 strata = normalize_strata(strata_raw)

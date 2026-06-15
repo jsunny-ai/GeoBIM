@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_db
+from app.api.v1.boreholes import _apply_revision, _latest_revision_map
 from app.models import Borehole, Project, ProjectBoreholeOverride, Stratum, User
 from app.schemas import ProjectRead, ProjectCreate
 from app.services.normalization import normalize_strata_group
@@ -189,13 +190,24 @@ async def list_effective_project_boreholes(
         )).scalars().all()
     override_map = {o.source_borehole_id: o for o in overrides}
 
+    # [v4.2] 전역 개정(Revision) 적용 — 적용 순서: 원본 → Revision(정정) → Override(프로젝트 보정)
+    latest_revs = await _latest_revision_map(db, [b.id for b in all_boreholes])
+
     selected_order = {borehole_id: index for index, borehole_id in enumerate(selected_ids)}
     rows: list[dict] = []
     for b in sorted(base_boreholes, key=lambda item: selected_order.get(item.id, 0)):
         item = _borehole_dict(b, loc_map.get(b.id))
+        rev = latest_revs.get(b.id)
+        if rev is not None:
+            item = _apply_revision(item, rev)
         override = override_map.get(b.id)
         rows.append(_apply_override(item, override) if override else item)
-    rows.extend(_borehole_dict(b, loc_map.get(b.id)) for b in supplementary)
+    for b in supplementary:
+        item = _borehole_dict(b, loc_map.get(b.id))
+        rev = latest_revs.get(b.id)
+        if rev is not None:
+            item = _apply_revision(item, rev)
+        rows.append(item)
 
     return {
         "boreholes": rows,

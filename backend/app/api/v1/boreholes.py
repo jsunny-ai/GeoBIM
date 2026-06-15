@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_db
-from app.models import Borehole, Project, ProjectBoreholeOverride, Stratum, User
+from app.models import Borehole, BoreholeRevision, PdfExtractionJob, Project, ProjectBoreholeOverride, Stratum, User
 from app.services.normalization import normalize_strata_group
+from app.services.pdf_path_resolver import pdf_display_name, resolve_pdf_path
 
 router = APIRouter()
 
@@ -58,6 +59,21 @@ class BoreholeUpdate(BaseModel):
 class BoreholeOverrideUpdate(BoreholeUpdate):
     name: str | None = None
     strata: list[StratumInput] | None = None
+
+
+class RevisionCreate(BaseModel):
+    """[v4.2] 개정 저장 — 원본 불변, 새 버전으로 누적."""
+
+    elevation: float | None = None
+    strata: list[StratumInput] | None = None
+    reason: str
+
+
+class RestoreRequest(BaseModel):
+    """[v4.2] 버전 복원 — 해당 버전 스냅샷을 복사한 새 버전 생성."""
+
+    version: int
+    reason: str | None = None
     status: str = "draft"
 
 
@@ -130,6 +146,84 @@ def _stratum_payload_dict(s: dict, index: int) -> dict:
         "raw_text": s.get("raw_text"),
         "n_value": s.get("n_value"),
         "uscs_code": s.get("uscs_code"),
+    }
+
+
+async def _latest_revision(db: AsyncSession, borehole_id: int) -> BoreholeRevision | None:
+    """[v4.2] 최신 활성 개정 1건."""
+    return (await db.execute(
+        select(BoreholeRevision)
+        .where(
+            BoreholeRevision.borehole_id == borehole_id,
+            BoreholeRevision.deleted_at.is_(None),
+        )
+        .order_by(BoreholeRevision.version.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+
+
+async def _latest_revision_map(db: AsyncSession, borehole_ids: list[int]) -> dict[int, BoreholeRevision]:
+    """[v4.2] 시추공별 최신 개정 일괄 조회."""
+    if not borehole_ids:
+        return {}
+    rows = (await db.execute(
+        select(BoreholeRevision)
+        .where(
+            BoreholeRevision.borehole_id.in_(borehole_ids),
+            BoreholeRevision.deleted_at.is_(None),
+        )
+        .order_by(BoreholeRevision.borehole_id, BoreholeRevision.version)
+    )).scalars().all()
+    latest: dict[int, BoreholeRevision] = {}
+    for rv in rows:
+        latest[rv.borehole_id] = rv  # 버전 오름차순 정렬 → 마지막이 최신
+    return latest
+
+
+def _apply_revision(data: dict, rev: BoreholeRevision) -> dict:
+    """[v4.2] 개정 payload(완전 스냅샷)를 원본 dict에 적용 → effective 값.
+
+    원본 테이블은 건드리지 않는다. 응답에만 최신 버전을 반영하고
+    data_status="revised" + revision_version 으로 표시한다.
+    """
+    payload = rev.payload or {}
+    if payload.get("elevation") is not None:
+        data["elevation"] = payload["elevation"]
+    if payload.get("strata") is not None and "strata" in data:
+        applied = [_stratum_payload_dict(item, idx) for idx, item in enumerate(payload["strata"])]
+        applied.sort(key=lambda x: x["depth_top"])
+        data["strata"] = applied
+    data["data_status"] = "revised"
+    data["revision_version"] = rev.version
+    return data
+
+
+def _original_snapshot(b: Borehole) -> dict:
+    """[v4.2] 원본(v0) 스냅샷 — strata 는 RevisionCreate.strata 와 동일 형태."""
+    return {
+        "elevation": b.elevation,
+        "strata": [
+            {
+                "depth_top": st.depth_top,
+                "depth_bottom": st.depth_bottom,
+                "soil_type": st.soil_type,
+                "raw_text": st.raw_text,
+                "n_value": st.n_value,
+                "uscs_code": st.uscs_code,
+            }
+            for st in sorted(b.strata, key=lambda x: x.depth_top)
+        ],
+    }
+
+
+def _revision_dict(rev: BoreholeRevision) -> dict:
+    return {
+        "version": rev.version,
+        "payload": rev.payload,
+        "reason": rev.reason,
+        "edited_by_id": rev.edited_by_id,
+        "restored_from": rev.restored_from,
+        "created_at": rev.created_at.isoformat() if rev.created_at else None,
     }
 
 
@@ -283,6 +377,13 @@ async def list_boreholes(
         rows = (await db.execute(base_stmt.limit(limit).offset(offset))).all()
         boreholes_list = [_borehole_dict(b, loc) for b, loc in rows]
 
+    # [v4.2] 개정(Revision) 적용 — 원본 불변, 최신 버전을 effective 로 반환
+    latest_revs = await _latest_revision_map(db, [d["id"] for d in boreholes_list])
+    for d in boreholes_list:
+        rv = latest_revs.get(d["id"])
+        if rv is not None:
+            _apply_revision(d, rv)
+
     return {
         "boreholes": boreholes_list,
         "count": len(boreholes_list),
@@ -314,7 +415,202 @@ async def get_borehole(
     loc_result = await db.execute(
         select(func.ST_AsGeoJSON(Borehole.location)).where(Borehole.id == borehole_id)
     )
-    return _borehole_dict(borehole, loc_result.scalar(), include_strata=True)
+    data = _borehole_dict(borehole, loc_result.scalar(), include_strata=True)
+
+    # [v4.2] 개정 적용 (원본 불변)
+    rev = await _latest_revision(db, borehole_id)
+    if rev is not None:
+        _apply_revision(data, rev)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# [v4.2] 개정(Revision) — 원본 불변 버전 이력
+# ---------------------------------------------------------------------------
+
+async def _get_active_borehole(db: AsyncSession, borehole_id: int, *, with_strata: bool = False) -> Borehole:
+    stmt = select(Borehole).where(Borehole.id == borehole_id, Borehole.deleted_at.is_(None))
+    if with_strata:
+        stmt = stmt.options(selectinload(Borehole.strata))
+    borehole = (await db.execute(stmt)).scalar_one_or_none()
+    if borehole is None:
+        raise HTTPException(status_code=404, detail="시추공을 찾을 수 없습니다.")
+    return borehole
+
+
+@router.post("/{borehole_id}/revisions", status_code=201)
+async def create_borehole_revision(
+    borehole_id: int,
+    body: RevisionCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """수정 저장 — 원본은 변경하지 않고 새 버전으로 누적."""
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail="수정 사유(reason)는 필수입니다.")
+
+    await _get_active_borehole(db, borehole_id)
+
+    payload: dict = {}
+    if body.elevation is not None:
+        payload["elevation"] = body.elevation
+    if body.strata is not None:
+        payload["strata"] = [item.model_dump() for item in body.strata]
+    if not payload:
+        raise HTTPException(status_code=422, detail="변경 내용이 없습니다.")
+
+    last = await _latest_revision(db, borehole_id)
+    next_version = (last.version if last else 0) + 1
+    rev = BoreholeRevision(
+        borehole_id=borehole_id,
+        version=next_version,
+        payload=payload,
+        reason=reason,
+        edited_by_id=getattr(current_user, "id", None),
+    )
+    db.add(rev)
+    await db.commit()
+    return {"borehole_id": borehole_id, "version": next_version}
+
+
+@router.get("/{borehole_id}/revisions")
+async def list_borehole_revisions(
+    borehole_id: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """버전 타임라인 — v0(원본) 포함 전체 이력."""
+    borehole = await _get_active_borehole(db, borehole_id, with_strata=True)
+    revs = (await db.execute(
+        select(BoreholeRevision)
+        .where(
+            BoreholeRevision.borehole_id == borehole_id,
+            BoreholeRevision.deleted_at.is_(None),
+        )
+        .order_by(BoreholeRevision.version)
+    )).scalars().all()
+
+    timeline = [{
+        "version": 0,
+        "payload": _original_snapshot(borehole),
+        "reason": "원본 (PDF 추출)",
+        "edited_by_id": None,
+        "restored_from": None,
+        "created_at": borehole.created_at.isoformat() if borehole.created_at else None,
+    }]
+    timeline.extend(_revision_dict(rv) for rv in revs)
+    return {
+        "borehole_id": borehole_id,
+        "current_version": revs[-1].version if revs else 0,
+        "revisions": timeline,
+    }
+
+
+@router.get("/{borehole_id}/revisions/{version}")
+async def get_borehole_revision(
+    borehole_id: int,
+    version: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """특정 버전 스냅샷 열람 (0 = 원본)."""
+    borehole = await _get_active_borehole(db, borehole_id, with_strata=True)
+    if version == 0:
+        return {
+            "version": 0,
+            "payload": _original_snapshot(borehole),
+            "reason": "원본 (PDF 추출)",
+            "created_at": borehole.created_at.isoformat() if borehole.created_at else None,
+        }
+    rev = (await db.execute(
+        select(BoreholeRevision).where(
+            BoreholeRevision.borehole_id == borehole_id,
+            BoreholeRevision.version == version,
+            BoreholeRevision.deleted_at.is_(None),
+        )
+    )).scalar_one_or_none()
+    if rev is None:
+        raise HTTPException(status_code=404, detail=f"v{version} 개정을 찾을 수 없습니다.")
+    return _revision_dict(rev)
+
+
+@router.post("/{borehole_id}/restore", status_code=201)
+async def restore_borehole_revision(
+    borehole_id: int,
+    body: RestoreRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """이력 보존형 복원 — 대상 버전 스냅샷을 복사한 '새 버전' 생성 (0 = 원본)."""
+    borehole = await _get_active_borehole(db, borehole_id, with_strata=True)
+
+    if body.version == 0:
+        payload = _original_snapshot(borehole)
+    else:
+        src = (await db.execute(
+            select(BoreholeRevision).where(
+                BoreholeRevision.borehole_id == borehole_id,
+                BoreholeRevision.version == body.version,
+                BoreholeRevision.deleted_at.is_(None),
+            )
+        )).scalar_one_or_none()
+        if src is None:
+            raise HTTPException(status_code=404, detail=f"v{body.version} 개정을 찾을 수 없습니다.")
+        payload = dict(src.payload or {})
+
+    last = await _latest_revision(db, borehole_id)
+    next_version = (last.version if last else 0) + 1
+    rev = BoreholeRevision(
+        borehole_id=borehole_id,
+        version=next_version,
+        payload=payload,
+        reason=(body.reason or "").strip() or f"v{body.version}(으)로 복원",
+        edited_by_id=getattr(current_user, "id", None),
+        restored_from=body.version,
+    )
+    db.add(rev)
+    await db.commit()
+    return {"borehole_id": borehole_id, "version": next_version, "restored_from": body.version}
+
+
+@router.get("/{borehole_id}/source-pdf")
+async def get_borehole_source_pdf(
+    borehole_id: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """[v4.2] 시추공 → 원본 PDF job 역조회 (PDF 대조 패널용)."""
+    borehole = await _get_active_borehole(db, borehole_id)
+    if not borehole.source_file:
+        raise HTTPException(status_code=404, detail="원본 PDF 정보가 없습니다 (수기 입력).")
+
+    job = (await db.execute(
+        select(PdfExtractionJob)
+        .where(PdfExtractionJob.file_path == borehole.source_file)
+        .order_by(PdfExtractionJob.id.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="원본 PDF 추출 작업을 찾을 수 없습니다.")
+    pdf_path = resolve_pdf_path(job.file_path)
+    if pdf_path is None or not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="원본 PDF 파일이 존재하지 않습니다.")
+
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(str(pdf_path))
+        page_count = doc.page_count
+        doc.close()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"PDF 열기 실패: {exc}")
+
+    return {
+        "job_id": job.id,
+        "page_count": page_count,
+        "file_name": pdf_display_name(job.file_path),
+    }
 
 
 # ---------------------------------------------------------------------------

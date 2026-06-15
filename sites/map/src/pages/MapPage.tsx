@@ -52,7 +52,7 @@ export default function MapPage() {
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch("/api/v1/boreholes/?limit=10000&include_strata=true")
+        const res = await fetch("/api/v1/boreholes/?limit=50000&include_strata=false")
         if (!res.ok) throw new Error(await apiErrorMessage(res, "시추공 데이터를 불러오지 못했습니다."))
         const body: BoreholeApiResponse = await res.json()
         if (!cancelled) {
@@ -76,10 +76,10 @@ export default function MapPage() {
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch("/api/v1/projects/?limit=1000")
+        const res = await fetch("/api/v1/projects/")
         if (!res.ok) return
         const body = await res.json()
-        if (!cancelled) setProjects(body.projects || [])
+        if (!cancelled) setProjects(Array.isArray(body) ? body : (body.projects || []))
       } catch {
         if (!cancelled) setProjects([])
       }

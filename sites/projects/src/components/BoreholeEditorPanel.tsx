@@ -20,7 +20,7 @@ interface Props {
 type DraftStratum = Omit<Stratum, "id">
 
 export default function BoreholeEditorPanel({ borehole, projectId, onClose, onCancel, onPreviewChange, onSaved }: Props) {
-  const update = useUpdateBorehole(borehole.id, projectId, borehole.is_supplementary)
+  const update = useUpdateBorehole(borehole.id, projectId, Boolean(borehole.is_supplementary))
 
   const [lat, setLat] = useState(String(borehole.latitude))
   const [lng, setLng] = useState(String(borehole.longitude))

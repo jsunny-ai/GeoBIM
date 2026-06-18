@@ -54,12 +54,12 @@ export default function App() {
               </p>
             )}
             <div className="space-y-2">
-              <Label htmlFor="email">이메일</Label>
+              <Label htmlFor="email">계정</Label>
               <Input
                 id="email"
-                type="email"
-                autoComplete="email"
-                placeholder="you@example.com"
+                type="text"
+                autoComplete="username"
+                placeholder="kunhwa"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -71,7 +71,7 @@ export default function App() {
                 id="password"
                 type="password"
                 autoComplete="current-password"
-                placeholder="••••••••"
+                placeholder="비밀번호"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -80,7 +80,7 @@ export default function App() {
           </CardContent>
           <CardFooter>
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "로그인 중…" : "로그인"}
+              {loading ? "로그인 중..." : "로그인"}
             </Button>
           </CardFooter>
         </form>

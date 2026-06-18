@@ -128,6 +128,46 @@ class EasyOcrProvider:
             return OcrProviderResult(self.name, True, [], str(exc))
 
 
+class TesseractOcrProvider:
+    name = "tesseract"
+
+    def extract_page(
+        self,
+        *,
+        image_bytes: bytes,
+        page_number: int,
+        page_width: float,
+        page_height: float,
+        image_width: int,
+        image_height: int,
+    ) -> OcrProviderResult:
+        try:
+            from PIL import Image
+            import pytesseract  # type: ignore
+        except Exception:
+            return OcrProviderResult(self.name, False, [], "pytesseract is not installed")
+
+        try:
+            image = Image.open(BytesIO(image_bytes)).convert("RGB")
+            raw = pytesseract.image_to_data(
+                image,
+                lang=settings.pdf_box_ocr_lang,
+                config="--psm 6",
+                output_type=pytesseract.Output.DICT,
+            )
+            elements = _tesseract_elements(
+                raw=raw,
+                page_number=page_number,
+                page_width=page_width,
+                page_height=page_height,
+                image_width=image_width,
+                image_height=image_height,
+            )
+            return OcrProviderResult(self.name, True, elements)
+        except Exception as exc:
+            return OcrProviderResult(self.name, True, [], str(exc))
+
+
 class DisabledOcrProvider:
     name = "disabled"
 
@@ -167,6 +207,8 @@ def _provider() -> OcrProvider:
         return PaddleOcrProvider()
     if provider == "easyocr":
         return EasyOcrProvider()
+    if provider == "tesseract":
+        return TesseractOcrProvider()
     return DisabledOcrProvider()
 
 
@@ -218,6 +260,60 @@ def _easyocr_elements(
         vertices = [{"x": float(point[0]), "y": float(point[1])} for point in box]
         bbox = _vertices_to_pdf_bbox(
             vertices=vertices,
+            page_width=page_width,
+            page_height=page_height,
+            image_width=image_width,
+            image_height=image_height,
+        )
+        if bbox is None:
+            continue
+        elements.append(PdfElement(page_number=page_number, type="ocr_word", text=text, bbox=bbox))
+    return elements
+
+
+def _tesseract_elements(
+    *,
+    raw: dict[str, Any],
+    page_number: int,
+    page_width: float,
+    page_height: float,
+    image_width: int,
+    image_height: int,
+) -> list[PdfElement]:
+    elements: list[PdfElement] = []
+    texts = raw.get("text") or []
+    confidences = raw.get("conf") or []
+    lefts = raw.get("left") or []
+    tops = raw.get("top") or []
+    widths = raw.get("width") or []
+    heights = raw.get("height") or []
+    count = len(texts)
+    for index in range(count):
+        text = str(texts[index] or "").strip()
+        if not text:
+            continue
+        try:
+            score = float(confidences[index])
+        except (IndexError, TypeError, ValueError):
+            score = 100.0
+        if score < 0:
+            continue
+        if score / 100.0 < float(settings.pdf_ocr_min_confidence or 0.25):
+            continue
+        try:
+            left = float(lefts[index])
+            top = float(tops[index])
+            width = float(widths[index])
+            height = float(heights[index])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        bbox = _image_rect_to_pdf_bbox(
+            left=left,
+            top=top,
+            right=left + width,
+            bottom=top + height,
             page_width=page_width,
             page_height=page_height,
             image_width=image_width,
@@ -288,3 +384,23 @@ def _vertices_to_pdf_bbox(
     if right <= left or bottom <= top:
         return None
     return (left, page_height - bottom, right, page_height - top)
+
+
+def _image_rect_to_pdf_bbox(
+    *,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    page_width: float,
+    page_height: float,
+    image_width: int,
+    image_height: int,
+) -> tuple[float, float, float, float] | None:
+    if image_width <= 0 or image_height <= 0 or right <= left or bottom <= top:
+        return None
+    pdf_left = left / image_width * page_width
+    pdf_right = right / image_width * page_width
+    pdf_top = top / image_height * page_height
+    pdf_bottom = bottom / image_height * page_height
+    return (pdf_left, page_height - pdf_bottom, pdf_right, page_height - pdf_top)

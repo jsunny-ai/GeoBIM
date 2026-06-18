@@ -4,6 +4,23 @@ export interface LoginError {
   message: string
 }
 
+function errorMessage(detail: unknown): string {
+  if (typeof detail === "string") return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item
+        if (item && typeof item === "object" && "msg" in item) return String(item.msg)
+        return JSON.stringify(item)
+      })
+      .join("\n")
+  }
+  if (detail && typeof detail === "object" && "msg" in detail) {
+    return String((detail as { msg: unknown }).msg)
+  }
+  return "로그인에 실패했습니다."
+}
+
 export async function login(email: string, password: string): Promise<void> {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
@@ -14,7 +31,7 @@ export async function login(email: string, password: string): Promise<void> {
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail ?? "로그인에 실패했습니다.")
+    throw new Error(errorMessage(data.detail))
   }
 }
 

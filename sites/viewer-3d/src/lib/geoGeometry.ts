@@ -221,8 +221,14 @@ export function buildSurfaceMesh(grid: number[][], boxW: number, boxD: number, m
   return geo
 }
 
-const SOLID_MESH_SUBDIVISIONS = 3
-const BOUNDARY_SMOOTH_PASSES = 1
+// [톱니 경계 완화] 핀치아웃(두 지층이 만나는 소멸 경계)은 마칭스퀘어가 셀 단위로
+// 대각선 절단하므로 격자 해상도에서 톱니(지그재그)가 보인다. 두 상수를 올려 완화한다:
+//   · SOLID_MESH_SUBDIVISIONS: 메쉬 격자를 더 잘게 재샘플 → 톱니 1개 크기 축소
+//   · BOUNDARY_SMOOTH_PASSES : carving 부호장(두께)을 더 평활 → 윤곽이 유선형 곡선화
+// 값을 더 올리면 더 매끄러우나 삼각형 수↑(빌드/메모리 비용). 과도한 평활은 얇은
+// 렌즈를 침식하므로 4 안팎이 균형점. (필요 시 추가 조정)
+const SOLID_MESH_SUBDIVISIONS = 4
+const BOUNDARY_SMOOTH_PASSES = 4
 
 function resampleGridBilinear(grid: number[][], factor: number) {
   if (factor <= 1) return grid
@@ -299,7 +305,12 @@ export function buildLayerSolidGeometryData(
   topGrid = resampleGridBilinear(topGrid, SOLID_MESH_SUBDIVISIONS)
   bottomGrid = resampleGridBilinear(bottomGrid, SOLID_MESH_SUBDIVISIONS)
   signedGrid = signedGrid ? resampleGridBilinear(signedGrid, SOLID_MESH_SUBDIVISIONS) : signedGrid
-  const boundaryGrid = signedGrid ? smoothGrid2D(signedGrid, BOUNDARY_SMOOTH_PASSES) : null
+  // [톱니 완화] 경계 윤곽 결정용 부호장. signed가 있으면(핀치아웃 카빙층) 그것을,
+  // 없으면(배경암·연속층) 두께장(top−bottom) 자체를 평활해서 쓴다. 기존엔 null일 때
+  // 원시 두께로 셀 단위 절단 → 두 지층이 만나는 소멸 경계가 톱니로 보였다. 두께장을
+  // 평활하면 0-등고선(소멸 경계)이 유선형 곡선이 되어 매끄럽게 절단된다.
+  const thicknessGrid = topGrid.map((row, j) => row.map((_, i) => topGrid[j][i] - bottomGrid[j][i]))
+  const boundaryGrid = smoothGrid2D(signedGrid ?? thicknessGrid, BOUNDARY_SMOOTH_PASSES)
   xGrid = xGrid ? resampleGridBilinear(xGrid, SOLID_MESH_SUBDIVISIONS) : xGrid
   zGrid = zGrid ? resampleGridBilinear(zGrid, SOLID_MESH_SUBDIVISIONS) : zGrid
 

@@ -1,9 +1,9 @@
-import { Map, Upload, LogOut } from "lucide-react"
+import { Database, LogOut, Map, Upload } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AUTH_URL, PROJECTS_URL, MAP_URL, UPLOAD_URL, API_URL } from "@shared/urls"
 
 interface Props {
-  active?: "projects" | "map" | "upload"
+  active?: "projects" | "map" | "upload" | "admin"
 }
 
 async function handleLogout() {
@@ -30,7 +30,6 @@ export default function Navbar({ active }: Props) {
           variant={active === "projects" ? "secondary" : "ghost"}
           size="sm"
           className="h-7 text-xs"
-          asChild={false}
           onClick={() => { window.location.href = PROJECTS_URL }}
         >
           프로젝트
@@ -50,6 +49,14 @@ export default function Navbar({ active }: Props) {
           onClick={() => { window.location.href = UPLOAD_URL }}
         >
           <Upload className="mr-1 h-3.5 w-3.5" /> 업로드
+        </Button>
+        <Button
+          variant={active === "admin" ? "secondary" : "ghost"}
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => { window.location.href = `${PROJECTS_URL}/admin/boreholes` }}
+        >
+          <Database className="mr-1 h-3.5 w-3.5" /> 시추공 관리
         </Button>
         <Button
           variant="ghost"

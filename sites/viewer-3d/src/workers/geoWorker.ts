@@ -335,6 +335,9 @@ self.onmessage = async (e: MessageEvent) => {
     // 표고(지표면 보정)에는 계속 사용한다. PDF 대조로 수정·저장되면 자동 복귀.
     const okProfiles = profiles.filter((p) => !p.warn)
     const skippedDeep = profiles.length - okProfiles.length
+    const EXT_EPS = 0.001
+    const isContinuousLayer = (key: StrataKey) =>
+      okProfiles.length > 0 && okProfiles.every((p) => p.thick[key] > EXT_EPS)
 
     // 제어점 규칙 — Leapfrog Vein 'Pinch out' 방식 (outside interval 등가):
     //   Leapfrog: 층이 없는 시추공에 'outside' 구간 생성 → 벽면 반전(flip)
@@ -380,7 +383,7 @@ self.onmessage = async (e: MessageEvent) => {
     //  · 후처리 스무딩 없음: TPS 자체가 C¹ 연속(최소 굽힘 에너지)이라 불필요.
     //    기존 Gaussian 4패스가 시추공 값 이탈의 주범이었음
     // raw(클램프 전, 외곽 음수) 함께 반환: 메쉬 경계의 서브셀 등고선 보간용
-    const buildThicknessGrid = (points: GridPoint[]): { grid: number[][]; raw: number[][] } => {
+    const buildThicknessGrid = (points: GridPoint[], continuous = false): { grid: number[][]; raw: number[][] } => {
       if (points.length === 0 || points.every((p) => p.z <= 0)) {
         return {
           grid: Array.from({ length: NX }, () => Array(NX).fill(0)),
@@ -388,17 +391,29 @@ self.onmessage = async (e: MessageEvent) => {
         }
       }
       const raw = rbfGrid(points, gx, gy, 1)
+      const floorGrid = continuous ? idwGrid(points.filter((p) => p.z > 0), gx, gy, 1) : null
       const tMax = points.reduce((m, p) => Math.max(m, p.z), 0)
+      const minPositive = points.reduce((m, p) => p.z > 0 ? Math.min(m, p.z) : m, Infinity)
+      const minContinuousThickness = continuous
+        ? Math.max(EXT_EPS * 10, Number.isFinite(minPositive) ? minPositive * 0.1 : EXT_EPS * 10)
+        : 0
       const cap = tMax * 2
-      return { grid: raw.map((row) => row.map((v) => Math.max(0, Math.min(v, cap)))), raw }
+      return {
+        grid: raw.map((row, j) => row.map((v, i) => {
+          const interpolatedFloor = floorGrid ? floorGrid[j][i] * 0.1 : minContinuousThickness
+          const lower = Math.max(minContinuousThickness, interpolatedFloor)
+          return Math.max(continuous ? lower : 0, Math.min(v, cap))
+        })),
+        raw,
+      }
     }
 
     const thickRes = {
-      soil: buildThicknessGrid(thickPts.soil),
-      weathered_rock: buildThicknessGrid(thickPts.weathered_rock),
-      soft_rock: buildThicknessGrid(thickPts.soft_rock),
-      normal_rock: buildThicknessGrid(thickPts.normal_rock),
-      hard_rock: buildThicknessGrid(thickPts.hard_rock),
+      soil: buildThicknessGrid(thickPts.soil, isContinuousLayer("soil")),
+      weathered_rock: buildThicknessGrid(thickPts.weathered_rock, isContinuousLayer("weathered_rock")),
+      soft_rock: buildThicknessGrid(thickPts.soft_rock, isContinuousLayer("soft_rock")),
+      normal_rock: buildThicknessGrid(thickPts.normal_rock, isContinuousLayer("normal_rock")),
+      hard_rock: buildThicknessGrid(thickPts.hard_rock, isContinuousLayer("hard_rock")),
     }
     const thickGrids: Record<StrataKey, number[][]> = {
       soil: thickRes.soil.grid, weathered_rock: thickRes.weathered_rock.grid,
@@ -424,21 +439,42 @@ self.onmessage = async (e: MessageEvent) => {
     // 과도하게 좁혀 급경사(≈18 m/m)를 만든다. 0.3으로 완화 시 E장들이 넓게
     // 겹치며 비례 분배가 점진 전환 → 최대 경사 2.8 m/m (수치 실험 tune.mjs)
     const EXT_PINCH = 0.3
-    const EXT_EPS = 0.001
     const extAnchors = okProfiles.map((pr) => {
       let cum = 0
       for (let k = 0; k <= pr.deepestRank; k++) cum += pr.thick[STRATA_KEYS[k]]
       return { x: pr.x, y: pr.y, deepest: pr.deepestRank, e: Math.max(0, pr.elev - cum - yBotM) }
     })
+    // [옵션 B] 배경 외삽 앵커에서 '암반 미도달 얕은공' 제외.
+    // 토사·풍화암(rank<2)에서 멈춘 공은 단지 깊이 안 뚫었을 뿐 그 아래 암반이
+    // 있을 가능성이 크다. 이를 배경 앵커로 쓰면 '풍화암이 바닥까지' 가정이
+    // 빈 영역으로 외삽돼 상단층이 풍선처럼 부풀고 수직 절벽을 만든다.
+    // 따라서 암반(연암 이상) 도달공만 배경을 정의하게 한다. 단, 암반 도달공이
+    // 하나도 없으면(전 부지 천층) 정보 손실을 막기 위해 기존 동작으로 폴백.
+    const ROCK_RANK = 2 // soft_rock 이상 = 암반
+    const anyRockReached = extAnchors.some((q) => q.deepest >= ROCK_RANK)
+    const extEligible = (q: { deepest: number; e: number }) =>
+      q.e > 0 && (!anyRockReached || q.deepest >= ROCK_RANK)
+    // [배경암상] 전역 배경암 rank = 관측된 가장 깊은 암반층(연암 이상).
+    // 암반 미관측 부지면 전역 최심 관측층으로 폴백.
+    let bgRank = -1
+    for (const q of extAnchors) if (q.deepest >= ROCK_RANK) bgRank = Math.max(bgRank, q.deepest)
+    if (bgRank < 0) for (const q of extAnchors) bgRank = Math.max(bgRank, q.deepest)
+    if (bgRank < 0) bgRank = 4
+    // [진단] 시추공 최심 관측층 분포 + 옵션 B로 배경에서 제외된 공 수
+    const diagBhByDeepest = [0, 0, 0, 0, 0]
+    for (const q of extAnchors) if (q.deepest >= 0 && q.deepest < 5) diagBhByDeepest[q.deepest]++
+    const diagExtExcluded = anyRockReached
+      ? extAnchors.filter((q) => q.deepest >= 0 && q.deepest < ROCK_RANK).length
+      : 0
     const extPts: Record<StrataKey, GridPoint[]> = {
       soil: [], weathered_rock: [], soft_rock: [], normal_rock: [], hard_rock: [],
     }
     for (let k = 0; k < STRATA_KEYS.length; k++) {
       const key = STRATA_KEYS[k]
-      const present = extAnchors.filter((q) => q.deepest === k && q.e > 0)
+      const present = extAnchors.filter((q) => q.deepest === k && extEligible(q))
       if (present.length === 0) continue
       for (const q of extAnchors) {
-        if (q.deepest === k && q.e > 0) {
+        if (q.deepest === k && extEligible(q)) {
           extPts[key].push({ x: q.x, y: q.y, z: q.e })
         } else {
           let bestD2 = Infinity
@@ -489,6 +525,10 @@ self.onmessage = async (e: MessageEvent) => {
     const normalBottomExt = mkGrid(), hardBottomExt = mkGrid()
     const rawGGrid = mkGrid() // 미분류 두께(클램프 전) — wedge 경계 보간용
 
+    // [진단] 연장 모드 거동 추적용 누적기
+    let diagSumWZero = 0                       // sumW≈0(폴백 발동) 셀 수
+    const diagBottomFill = [0, 0, 0, 0, 0]     // 모델 바닥을 점유한 지층 분포(τ>0 최하층)
+
     for (let j = 0; j < NX; j++) {
       for (let i = 0; i < NX; i++) {
         const surfElev = elevGrid[j][i]
@@ -511,23 +551,20 @@ self.onmessage = async (e: MessageEvent) => {
         hardBottomGrid[j][i] = hardB
         boreholeBottomGrid[j][i] = boreholeB
 
-        // ── 연장 모드: G를 E_k 가중 분배 → 유효 두께 τ로 재적층 ──
+        // ── 연장 모드(배경암상 / Leapfrog background lithology) ──
+        // 기존 '각 공의 최심 관측층을 모델 바닥까지 연장' 방식은, 암반 미도달
+        // 시추공이 많은 부지에서 풍화암이 바닥까지 부풀어(balloon) 인접 암반과
+        // 충돌하며 수직 절벽을 만들었다(GitHub 버전에도 있던 설계적 한계).
+        // 대신 관측 경계(soilB..hardB)는 그대로 두고, 모델 하부 전체를 전역
+        // 배경암(bgRank, 보통 경암)으로 채운다:
+        //   · k < bgRank  : 경계 = 관측 경계 (관측 두께만큼만 존재)
+        //   · k ≥ bgRank  : 경계 = 모델 바닥(yBot) → 배경암이 바닥까지 점유
+        // 풍화암 등 상부층은 관측 두께를 못 넘어가므로 풍선이 원천 차단되고,
+        // 모든 경계가 관측 RBF면(연속)이라 수직 절벽도 생기지 않는다.
+        // 배경암 윗면 = bExt[bgRank-1](관측 경계)라 단면 전환이 매끄럽다.
         rawGGrid[j][i] = boreholeB - yBotM
-        const G = Math.max(0, boreholeB - yBotM)
-        let deep = 0
-        for (let k = 0; k < tArr.length; k++) if (tArr[k] > EXT_EPS) deep = k
-        const wArr = STRATA_KEYS.map((key) => extGrids[key][j][i])
-        wArr[deep] += 1e-6 * Math.max(G, 1) // Σw=0 폴백: 최심 관측층 귀속
-        let sumW = 0
-        for (const w of wArr) sumW += w
-        const bExt: number[] = []
-        let acc = surfElev
-        for (let k = 0; k < tArr.length; k++) {
-          const fill = sumW > 0 ? (G * wArr[k]) / sumW : k === deep ? G : 0
-          acc = Math.max(acc - (tArr[k] + fill), yBotM) // [v4.2] 바닥 클램프
-          bExt.push(acc)
-        }
-        bExt[4] = yBotM // 워터타이트: 부동소수 누적 오차 제거
+        const obsB = [soilB, weatheredB, softB, normalB, hardB]
+        const bExt: number[] = obsB.map((b, k) => (k < bgRank ? b : yBotM))
         soilBottomExt[j][i] = bExt[0]
         weatheredBottomExt[j][i] = bExt[1]
         softBottomExt[j][i] = bExt[2]
@@ -541,6 +578,7 @@ self.onmessage = async (e: MessageEvent) => {
           if (prevB - bExt[k] > 1e-9) deepTau = k
           prevB = bExt[k]
         }
+        diagBottomFill[deepTau]++ // [진단] 모델 바닥 점유 지층 분포
 
         // 복셀 라벨 (두 모드)
         for (let l = 0; l < MZ; l++) {
@@ -574,13 +612,20 @@ self.onmessage = async (e: MessageEvent) => {
     const smoothMeshData: Record<string, { positions: Float32Array; indices: Uint32Array }> = {}
 
     const flatBottomGrid = Array.from({ length: NX }, () => Array(NX).fill(yBotM))
+    const observedSignedFor = (key: StrataKey) => (isContinuousLayer(key) ? null : rawThick[key])
+    // [배경암상] 연장 메쉬 carving 부호장:
+    //   · 배경암(rank ≥ bgRank): 모델 전역에 존재하므로 carving 생략(null) → 빈 공간 없음
+    //   · 상부층(rank < bgRank): 관측 메쉬와 동일하게 미관측 영역만 깎는다(rawThick),
+    //     단 모든 공에 존재하는 연속층은 carving 불필요(null)
+    const extSignedFor = (key: StrataKey) =>
+      rank[key] >= bgRank ? null : isContinuousLayer(key) ? null : rawThick[key]
 
     const layerPairs: [string, number[][], number[][], number[][] | null][] = [
-      ["soil",           elevGrid,            soilBottomGrid,      rawThick.soil],
-      ["weathered_rock", soilBottomGrid,      weatheredBottomGrid, rawThick.weathered_rock],
-      ["soft_rock",      weatheredBottomGrid, softBottomGrid,      rawThick.soft_rock],
-      ["normal_rock",    softBottomGrid,      normalBottomGrid,    rawThick.normal_rock],
-      ["hard_rock",      normalBottomGrid,    hardBottomGrid,      rawThick.hard_rock],
+      ["soil",           elevGrid,            soilBottomGrid,      observedSignedFor("soil")],
+      ["weathered_rock", soilBottomGrid,      weatheredBottomGrid, observedSignedFor("weathered_rock")],
+      ["soft_rock",      weatheredBottomGrid, softBottomGrid,      observedSignedFor("soft_rock")],
+      ["normal_rock",    softBottomGrid,      normalBottomGrid,    observedSignedFor("normal_rock")],
+      ["hard_rock",      normalBottomGrid,    hardBottomGrid,      observedSignedFor("hard_rock")],
       ["unknown",        boreholeBottomGrid,  flatBottomGrid,      rawGGrid],
     ]
     for (const [name, topGrid, bottomGrid, signed] of layerPairs) {
@@ -595,11 +640,11 @@ self.onmessage = async (e: MessageEvent) => {
     // 연장분이 유효 두께 τ에 흡수되어 있으므로 관측+연장이 한 덩어리이며,
     // 색·재질도 관측 메쉬와 동일하게 렌더링된다 (뷰어에서 "@ext" → 원본 색 매핑)
     const layerPairsExt: [string, number[][], number[][], number[][] | null][] = [
-      ["soil@ext",           elevGrid,           soilBottomExt,      signedExt.soil],
-      ["weathered_rock@ext", soilBottomExt,      weatheredBottomExt, signedExt.weathered_rock],
-      ["soft_rock@ext",      weatheredBottomExt, softBottomExt,      signedExt.soft_rock],
-      ["normal_rock@ext",    softBottomExt,      normalBottomExt,    signedExt.normal_rock],
-      ["hard_rock@ext",      normalBottomExt,    hardBottomExt,      signedExt.hard_rock],
+      ["soil@ext",           elevGrid,           soilBottomExt,      extSignedFor("soil")],
+      ["weathered_rock@ext", soilBottomExt,      weatheredBottomExt, extSignedFor("weathered_rock")],
+      ["soft_rock@ext",      weatheredBottomExt, softBottomExt,      extSignedFor("soft_rock")],
+      ["normal_rock@ext",    softBottomExt,      normalBottomExt,    extSignedFor("normal_rock")],
+      ["hard_rock@ext",      normalBottomExt,    hardBottomExt,      extSignedFor("hard_rock")],
     ]
     for (const [name, topGrid, bottomGrid, signed] of layerPairsExt) {
       const mesh = buildLayerSolidGeometryData(topGrid, bottomGrid, boxW, boxD, mScale, signed)
@@ -666,6 +711,29 @@ self.onmessage = async (e: MessageEvent) => {
       transferBuffers.push(smoothMeshData[type].indices.buffer as ArrayBuffer)
     }
 
+    // [진단] 연장 경계면 최대 인접-셀 경사(m/m)와 발생 지층
+    const dxM = lngWidthM / (NX - 1), dyM = latWidthM / (NX - 1)
+    const extBottoms = [soilBottomExt, weatheredBottomExt, softBottomExt, normalBottomExt, hardBottomExt]
+    let diagMaxSlope = 0, diagMaxSlopeLayer = -1
+    for (let k = 0; k < 5; k++) {
+      const g = extBottoms[k]
+      for (let j = 0; j < NX; j++) for (let i = 0; i < NX; i++) {
+        if (i + 1 < NX) { const s = Math.abs(g[j][i + 1] - g[j][i]) / dxM; if (s > diagMaxSlope) { diagMaxSlope = s; diagMaxSlopeLayer = k } }
+        if (j + 1 < NX) { const s = Math.abs(g[j + 1][i] - g[j][i]) / dyM; if (s > diagMaxSlope) { diagMaxSlope = s; diagMaxSlopeLayer = k } }
+      }
+    }
+    const nCells = NX * NX
+    const diag = {
+      bhByDeepest: diagBhByDeepest,          // [soil,weath,soft,normal,hard] 최심관측층 공 수
+      extExcluded: diagExtExcluded,          // 옵션 B로 배경앵커서 제외된 얕은공 수
+      anyRockReached,
+      bgRank,                                // [배경암상] 모델 바닥을 채우는 전역 배경암 rank
+      bottomFill: diagBottomFill,            // 모델 바닥 점유 지층 분포(셀 수)
+      maxSlope: Math.round(diagMaxSlope * 10) / 10,
+      maxSlopeLayer: diagMaxSlopeLayer,      // 0=soil..4=hard
+    }
+    try { console.warn("[geoWorker diag]", JSON.stringify(diag)) } catch {}
+
     ;(self as any).postMessage(
       {
         type: "done",
@@ -674,6 +742,7 @@ self.onmessage = async (e: MessageEvent) => {
         voxelCells,
         dz, yBotM, gTop, MZ, confRadiusM, lngWidthM, latWidthM,
         skippedDeep, // [v4.2] 이상 심도로 제어점에서 제외된 시추공 수
+        diag,        // [진단] 연장 모드 거동 지표
       },
       transferBuffers,
     )

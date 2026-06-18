@@ -142,6 +142,9 @@ class Project(Base, TimestampMixin):
     )
     members: Mapped[list[ProjectMember]] = relationship(back_populates="project")
     boreholes: Mapped[list[Borehole]] = relationship(back_populates="project")
+    borehole_links: Mapped[list[ProjectBoreholeLink]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     extraction_jobs: Mapped[list[PdfExtractionJob]] = relationship(back_populates="project")
 
 
@@ -196,10 +199,15 @@ class Borehole(Base, TimestampMixin):
     source_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # 보완 시추공 여부 (False=기존 원본, True=사후 추가 신규)
     is_supplementary: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # 전역 데이터 출처: public, user_upload, manual_input, test
+    data_origin: Mapped[str] = mapped_column(String(30), default="public", nullable=False, index=True)
 
     # 관계
     project: Mapped[Project] = relationship(back_populates="boreholes")
     strata: Mapped[list[Stratum]] = relationship(
+        back_populates="borehole", cascade="all, delete-orphan"
+    )
+    project_links: Mapped[list[ProjectBoreholeLink]] = relationship(
         back_populates="borehole", cascade="all, delete-orphan"
     )
     project_overrides: Mapped[list[ProjectBoreholeOverride]] = relationship(
@@ -269,6 +277,45 @@ class ProjectBoreholeOverride(Base, TimestampMixin):
 
     project: Mapped[Project] = relationship()
     source_borehole: Mapped[Borehole] = relationship(back_populates="project_overrides")
+
+
+class ProjectBoreholeLink(Base, TimestampMixin):
+    """프로젝트별 시추공 사용 상태.
+
+    data_origin은 boreholes의 전역 출처이고, project_role은 현재 프로젝트에서
+    신규/기존/제외로 보여줄지를 결정하는 관계 속성이다.
+    """
+
+    __tablename__ = "project_borehole_links"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    borehole_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("boreholes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # existing, new, duplicate_linked, excluded
+    project_role: Mapped[str] = mapped_column(String(30), nullable=False, default="existing", index=True)
+    # bbox_selected, pdf_uploaded, manual_created, duplicate_detected, migrated, test_excluded
+    linked_reason: Mapped[str] = mapped_column(String(50), nullable=False, default="migrated", index=True)
+    registered_from_job_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("pdf_extraction_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    registered_by_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="borehole_links")
+    borehole: Mapped[Borehole] = relationship(back_populates="project_links")
+    registered_from_job: Mapped[PdfExtractionJob | None] = relationship()
 
 
 class BoreholeRevision(Base, TimestampMixin):
@@ -384,6 +431,7 @@ __all__ = [
     "Borehole",
     "Stratum",
     "ProjectBoreholeOverride",
+    "ProjectBoreholeLink",
     "BoreholeRevision",
     "PdfTemplate",
     "PdfExtractionJob",

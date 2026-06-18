@@ -34,6 +34,8 @@ const panelStyle: React.CSSProperties = {
   color: C.text, fontFamily: "'Noto Sans KR', sans-serif",
 }
 
+const DEFAULT_LAYER_VISIBLE = [true, true, true, true]
+
 export default function MapPage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const restoredProjectRef = useRef<string | null>(null) // 중복 API 및 무한 루프 락 체크용
@@ -87,9 +89,15 @@ export default function MapPage() {
     return () => { cancelled = true }
   }, [])
 
-  const filteredBoreholes = projectFilter
-    ? allBoreholes.filter((b) => b.project_id === projectFilter)
-    : allBoreholes
+  const filteredBoreholes = useMemo(() => {
+    return projectFilter
+      ? allBoreholes.filter((b) => b.project_id === projectFilter)
+      : allBoreholes
+  }, [allBoreholes, projectFilter])
+
+  const visibleBoreholes = useMemo(() => {
+    return showMarkers ? filteredBoreholes : []
+  }, [filteredBoreholes, showMarkers])
 
   // ── Cesium 훅 ────────────────────────────────────────────
   const handleBoreholeClick = useCallback(async (bh: Borehole) => {
@@ -107,8 +115,8 @@ export default function MapPage() {
   }, [])
 
   const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing, setSelection } =
-    useCesiumMap(containerRef, showMarkers ? filteredBoreholes : [], "Base",
-      15, 10, 235, "gl", [true,true,true,true],
+    useCesiumMap(containerRef, visibleBoreholes, "Base",
+      15, 10, 235, "gl", DEFAULT_LAYER_VISIBLE,
       handleBoreholeClick
     )
 
@@ -120,6 +128,7 @@ export default function MapPage() {
 
   // URL에서 projectId 또는 project_id 파라미터가 있는 경우 자동 로드 및 영역 세팅
   useEffect(() => {
+    let cancelled = false
     const sp = new URLSearchParams(window.location.search)
     const projectIdStr = sp.get("project_id") || sp.get("projectId")
     if (!projectIdStr || allBoreholes.length === 0) return
@@ -164,10 +173,12 @@ export default function MapPage() {
         console.error("Failed to restore project from URL:", e)
       }
     })()
+
+    return () => { cancelled = true }
   }, [allBoreholes, setSelection])
 
-  const handleSaveProject = async () => {
-    if (!projectName.trim()) {
+  const handleSaveProject = async (name: string, description: string) => {
+    if (!name.trim()) {
       alert("프로젝트 이름을 입력해주세요.")
       return
     }
@@ -183,8 +194,8 @@ export default function MapPage() {
       }))
 
       const payload = {
-        name: projectName,
-        description: projectDesc,
+        name,
+        description,
         region: "선택 영역",
         source_crs: "EPSG:4326",
         bbox: {
@@ -208,6 +219,8 @@ export default function MapPage() {
       }
 
       const savedProject = await res.json()
+      setProjectName(savedProject.name)
+      setProjectDesc(savedProject.description || "")
       alert(`프로젝트 '${savedProject.name}'가 성공적으로 저장되었습니다!`)
       setIsSaveModalOpen(false)
     } catch (e: any) {
@@ -355,78 +368,15 @@ export default function MapPage() {
         )}
       </div>
 
-      {/* 새 프로젝트 저장 모달 */}
       {isSaveModalOpen && (
-        <div style={{
-          position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
-          background: "rgba(28,25,23,.45)", zIndex: 100,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontFamily: "'Noto Sans KR', sans-serif"
-        }}>
-          <div style={{
-            background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
-            width: 380, padding: 24, boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
-            color: C.text
-          }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16, marginTop: 0 }}>
-              {currentProjectId ? "프로젝트 영역 수정" : "새 프로젝트 저장"}
-            </h3>
-            
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 12, color: C.tertiary, display: "block", marginBottom: 6 }}>프로젝트 이름</label>
-              <input
-                type="text"
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder="예: 수원시 영통구 지반 조사"
-                style={{
-                  width: "100%", padding: "8px 12px", borderRadius: 6,
-                  background: C.input, border: `1px solid ${C.border}`,
-                  color: C.text, fontSize: 13, outline: "none", boxSizing: "border-box"
-                }}
-              />
-            </div>
-            
-            <div style={{ marginBottom: 20 }}>
-              <label style={{ fontSize: 12, color: C.tertiary, display: "block", marginBottom: 6 }}>프로젝트 설명</label>
-              <textarea
-                value={projectDesc}
-                onChange={(e) => setProjectDesc(e.target.value)}
-                placeholder="상세 정보를 입력하세요..."
-                style={{
-                  width: "100%", padding: "8px 12px", borderRadius: 6,
-                  background: C.input, border: `1px solid ${C.border}`,
-                  color: C.text, fontSize: 13, outline: "none",
-                  height: 80, resize: "none", boxSizing: "border-box", fontFamily: "inherit"
-                }}
-              />
-            </div>
-            
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <button
-                onClick={() => setIsSaveModalOpen(false)}
-                style={{
-                  padding: "8px 16px", borderRadius: 6,
-                  background: "transparent", border: `1px solid ${C.border}`,
-                  color: C.secondary, fontSize: 13, cursor: "pointer"
-                }}
-              >
-                취소
-              </button>
-              <button
-                onClick={handleSaveProject}
-                disabled={saveLoading}
-                style={{
-                  padding: "8px 16px", borderRadius: 6,
-                  background: C.success, border: `1px solid ${C.successBd}`,
-                  color: "#1c1917", fontSize: 13, fontWeight: 600, cursor: "pointer"
-                }}
-              >
-                {saveLoading ? "저장 중..." : "저장"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SaveProjectModal
+          currentProjectId={currentProjectId}
+          initialName={projectName}
+          initialDescription={projectDesc}
+          saveLoading={saveLoading}
+          onCancel={() => setIsSaveModalOpen(false)}
+          onSave={handleSaveProject}
+        />
       )}
 
       {/* ── 시추공 정보 패널 ─────────────────────────────────── */}
@@ -557,6 +507,104 @@ function InfoRow({ label, value, valueStyle }: {
     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 12 }}>
       <span style={{ color: "#78716c" }}>{label}</span>
       <span style={{ color: "#44403c", ...valueStyle }}>{value}</span>
+    </div>
+  )
+}
+
+function SaveProjectModal({
+  currentProjectId,
+  initialName,
+  initialDescription,
+  saveLoading,
+  onCancel,
+  onSave,
+}: {
+  currentProjectId: number | null
+  initialName: string
+  initialDescription: string
+  saveLoading: boolean
+  onCancel: () => void
+  onSave: (name: string, description: string) => void
+}) {
+  const [name, setName] = useState(initialName)
+  const [description, setDescription] = useState(initialDescription)
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onSave(name, description)
+  }
+
+  return (
+    <div style={{
+      position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
+      background: "rgba(28,25,23,.45)", zIndex: 100,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "'Noto Sans KR', sans-serif"
+    }}>
+      <form onSubmit={handleSubmit} style={{
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12,
+        width: 380, padding: 24, boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+        color: C.text
+      }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16, marginTop: 0 }}>
+          {currentProjectId ? "프로젝트 영역 수정" : "새 프로젝트 저장"}
+        </h3>
+        
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 12, color: C.tertiary, display: "block", marginBottom: 6 }}>프로젝트 이름</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="예: 수원시 영통구 지반 조사"
+            style={{
+              width: "100%", padding: "8px 12px", borderRadius: 6,
+              background: C.input, border: `1px solid ${C.border}`,
+              color: C.text, fontSize: 13, outline: "none", boxSizing: "border-box"
+            }}
+          />
+        </div>
+        
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ fontSize: 12, color: C.tertiary, display: "block", marginBottom: 6 }}>프로젝트 설명</label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="상세 정보를 입력하세요..."
+            style={{
+              width: "100%", padding: "8px 12px", borderRadius: 6,
+              background: C.input, border: `1px solid ${C.border}`,
+              color: C.text, fontSize: 13, outline: "none",
+              height: 80, resize: "none", boxSizing: "border-box", fontFamily: "inherit"
+            }}
+          />
+        </div>
+        
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            onClick={onCancel}
+            style={{
+              padding: "8px 16px", borderRadius: 6,
+              background: "transparent", border: `1px solid ${C.border}`,
+              color: C.secondary, fontSize: 13, cursor: "pointer"
+            }}
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={saveLoading}
+            style={{
+              padding: "8px 16px", borderRadius: 6,
+              background: C.success, border: `1px solid ${C.successBd}`,
+              color: "#1c1917", fontSize: 13, fontWeight: 600, cursor: "pointer"
+            }}
+          >
+            {saveLoading ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

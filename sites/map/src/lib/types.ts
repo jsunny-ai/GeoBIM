@@ -24,7 +24,14 @@ export interface Borehole {
 export interface Project {
   id: number
   name: string
+  description?: string | null
   region: string | null
+  source_crs?: string | null
+  bbox?: {
+    bbox?: [number, number, number, number]
+    polygon?: LngLat[]
+    borehole_ids?: number[]
+  } | null
   borehole_count: number
 }
 

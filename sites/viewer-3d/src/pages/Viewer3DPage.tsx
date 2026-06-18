@@ -1,5 +1,6 @@
-import { useRef, useState, useEffect } from "react"
+import { useRef, useState, useEffect, useMemo } from "react"
 import { BoreholeTable } from "../components/BoreholeTable"
+import { BoreholeEditPanel } from "../components/BoreholeEditPanel"
 import { DepthWarningModal } from "../components/DepthWarningModal"
 import { PdfComparePanel } from "../components/PdfComparePanel"
 import { ViewerControls, type Basemap } from "../components/ViewerControls"
@@ -48,6 +49,17 @@ const hint: React.CSSProperties = {
   fontFamily: "'Noto Sans KR',sans-serif",
 }
 
+type ModelSourceMode = "all" | "existing" | "new"
+
+const modelSourceLabels: Record<ModelSourceMode, string> = {
+  all: "전체",
+  existing: "기존",
+  new: "신규",
+}
+
+const isProjectNewBorehole = (b: Borehole) =>
+  (b as any).project_role ? (b as any).project_role === "new" : Boolean((b as any).is_supplementary)
+
 export default function Viewer3DPage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const bhPosRef = useRef<Record<string, { x: number; y: number; z: number }>>({})
@@ -67,10 +79,12 @@ export default function Viewer3DPage() {
   const [showColumns, setShowColumns] = useState(true)
   const [showDrape, setShowDrape] = useState(true)
   const [renderMode, setRenderMode] = useState<"smooth" | "voxel">("smooth")
-  const [basementMode, setBasementMode] = useState<"extend" | "unknown">("extend") // [v4] 미분류 구간 처리 (기본: 연장)
+  const [modelSourceMode, setModelSourceMode] = useState<ModelSourceMode>("all")
+  const [basementMode, setBasementMode] = useState<"extend" | "unknown">("extend") // 최초 진입/새로고침 시 연장(Leapfrog) 모드를 기본으로 표시. 미분류 유지는 사용자가 선택.
   // [v4.2] 이상 심도 검증 워크플로우
   const [reloadKey, setReloadKey] = useState(0)
   const [compareBh, setCompareBh] = useState<(Borehole & { dem_elevation?: number }) | null>(null)
+  const [editingBh, setEditingBh] = useState<(Borehole & { dem_elevation?: number }) | null>(null)
   const [depthModalDismissed, setDepthModalDismissed] = useState(false)
   const [visibility, setVisibility] = useState<Record<string, boolean>>({
     soil: true,
@@ -84,6 +98,12 @@ export default function Viewer3DPage() {
   const { sceneRef, cameraRef, controlsRef } = useThreeScene(containerRef)
   const { boreholes, fetchStatus, fetchErr } = useBoreholeData(bbox, polygon, boreholeIds, projectId, reloadKey)
   const [bhState, setBhState] = useState<(Borehole & { dem_elevation?: number })[]>([])
+
+  const modelBoreholes = useMemo(() => {
+    if (modelSourceMode === "existing") return bhState.filter((b) => !isProjectNewBorehole(b))
+    if (modelSourceMode === "new") return bhState.filter((b) => isProjectNewBorehole(b))
+    return bhState
+  }, [bhState, modelSourceMode])
 
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search)
@@ -132,11 +152,28 @@ export default function Viewer3DPage() {
     }
   }, [boreholes])
 
+  useEffect(() => {
+    const onModelSourceChange = (event: Event) => {
+      const mode = (event as CustomEvent<ModelSourceMode>).detail
+      if (mode === "all" || mode === "existing" || mode === "new") {
+        setModelSourceMode(mode)
+        setSelectedBh(null)
+      }
+    }
+    window.addEventListener("geobim:model-source-change", onModelSourceChange)
+    return () => window.removeEventListener("geobim:model-source-change", onModelSourceChange)
+  }, [])
+
   const handleUpdateElevation = async (bhId: string, newElev: number) => {
-    const response = await fetch(`/api/v1/boreholes/${bhId}`, {
-      method: "PATCH",
+    const target = bhState.find((b) => String(b.id) === String(bhId))
+    const response = await fetch(`/api/v1/boreholes/${bhId}/revisions`, {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ elevation: newElev }),
+      body: JSON.stringify({
+        elevation: newElev,
+        strata: target?.strata ?? [],
+        reason: "3D 지질 뷰어에서 표고 보정",
+      }),
     })
     if (!response.ok) {
       throw new Error("표고 서버 반영 실패: " + response.statusText)
@@ -162,7 +199,7 @@ export default function Viewer3DPage() {
     bhPosRef,
   }
 
-  const { focusBorehole } = useGeoModel(sceneRef, cameraRef, controlsRef, bhState, bbox, polygon, modelSettings, containerRef)
+  const { focusBorehole } = useGeoModel(sceneRef, cameraRef, controlsRef, modelBoreholes, bbox, polygon, modelSettings, containerRef)
 
   // ── 항상 viewport div를 DOM에 유지 ──────────────────────────────────────
   // useThreeScene의 effect 의존성이 [containerRef](ref 객체)라서
@@ -236,6 +273,53 @@ export default function Viewer3DPage() {
               <div>마우스 휠 = 카메라 줌 인/아웃</div>
             </div>
 
+            <div style={{
+              position: "absolute",
+              top: 84,
+              right: 14,
+              zIndex: 10,
+              display: "flex",
+              gap: 4,
+              padding: 4,
+              borderRadius: 6,
+              border: `1px solid ${C.border}`,
+              background: "rgba(250,248,245,.9)",
+              fontFamily: "'Noto Sans KR',sans-serif",
+            }}>
+              {(["all", "existing", "new"] as ModelSourceMode[]).map((mode) => {
+                const count = mode === "existing"
+                  ? bhState.filter((b) => !isProjectNewBorehole(b)).length
+                  : mode === "new"
+                    ? bhState.filter((b) => isProjectNewBorehole(b)).length
+                    : bhState.length
+                const active = modelSourceMode === mode
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      setModelSourceMode(mode)
+                      setSelectedBh(null)
+                    }}
+                    title={`${modelSourceLabels[mode]} 데이터만으로 지층 형상 생성`}
+                    style={{
+                      minWidth: 58,
+                      padding: "5px 8px",
+                      borderRadius: 4,
+                      border: `1px solid ${active ? "#a8a29e" : "transparent"}`,
+                      background: active ? "rgba(168,162,158,.28)" : "transparent",
+                      color: active ? C.text : C.tertiary,
+                      cursor: "pointer",
+                      fontSize: 11,
+                      fontWeight: active ? 700 : 500,
+                      fontFamily: "'Noto Sans KR',sans-serif",
+                    }}
+                  >
+                    {modelSourceLabels[mode]} {count}
+                  </button>
+                )
+              })}
+            </div>
+
             {fetchStatus === "loading" && (
               <div style={{
                 position: "absolute", bottom: 50, left: "50%",
@@ -272,6 +356,26 @@ export default function Viewer3DPage() {
           focusBorehole={focusBorehole}
           onUpdateElevation={handleUpdateElevation}
           onInspectData={(b) => setCompareBh(b)}
+          onEditData={(b) => {
+            setEditingBh(b)
+            setSelectedBh(String(b.id))
+          }}
+        />
+      )}
+
+      {!showLoadingOverlay && !showErrorOverlay && editingBh && (
+        <BoreholeEditPanel
+          borehole={editingBh}
+          onClose={() => setEditingBh(null)}
+          onPreviewChange={(updated) => {
+            setBhState((prev) => prev.map((b) => (String(b.id) === String(updated.id) ? { ...b, ...updated } : b)))
+            setEditingBh((prev) => (prev && String(prev.id) === String(updated.id) ? { ...prev, ...updated } : prev))
+          }}
+          onSaved={(updated) => {
+            setBhState((prev) => prev.map((b) => (String(b.id) === String(updated.id) ? ({ ...b, ...updated, data_status: "revised" } as any) : b)))
+            setEditingBh(null)
+            setReloadKey((k) => k + 1)
+          }}
         />
       )}
 

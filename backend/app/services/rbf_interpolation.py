@@ -1,5 +1,91 @@
+import logging
 import numpy as np
 from scipy.interpolate import RBFInterpolator
+
+logger = logging.getLogger(__name__)
+
+
+def merge_nearby_boreholes(
+    boreholes: list[dict], threshold_m: float = 2.0
+) -> list[dict]:
+    """
+    평면상 threshold_m(기본 2m) 이내로 겹치는 시추공들을 하나로 병합합니다.
+
+    같은 부지의 다중 로그/재시추(연속 ID 등)는 좌표가 cm 단위로 겹치는데,
+    이를 그대로 RBF에 넣으면 보간 행렬이 특이(near-singular)해져 가중치가
+    폭주하고 격자 Z 전역이 발산합니다. 보간 전에 군집을 대표 1개로 합쳐
+    이 발산을 원천 차단합니다.
+
+    병합 규칙(결정적):
+      - 위치: 군집 평균 경위도
+      - 표고(elevation): 군집 평균
+      - 지층(strata): 군집 내 strata 항목이 가장 많은(가장 완전한) 시추공의 것을 채택
+    """
+    pts = [
+        (b.get("longitude"), b.get("latitude"))
+        for b in boreholes
+    ]
+    valid = [
+        i for i, (x, y) in enumerate(pts)
+        if x is not None and y is not None
+    ]
+    if len(valid) <= 1:
+        return boreholes
+
+    # 임계거리를 도(degree) 단위로 환산 (위도 기준 근사; 1도 ≈ 111,000m)
+    mid_lat = np.mean([boreholes[i]["latitude"] for i in valid])
+    cos_lat = np.cos(np.radians(mid_lat))
+    coords_m = {
+        i: (
+            boreholes[i]["longitude"] * 111_320.0 * cos_lat,
+            boreholes[i]["latitude"] * 110_540.0,
+        )
+        for i in valid
+    }
+
+    used: set[int] = set()
+    merged: list[dict] = []
+    n_clusters_collapsed = 0
+
+    for i in valid:
+        if i in used:
+            continue
+        cluster = [i]
+        xi, yi = coords_m[i]
+        for j in valid:
+            if j == i or j in used:
+                continue
+            xj, yj = coords_m[j]
+            if (xi - xj) ** 2 + (yi - yj) ** 2 <= threshold_m ** 2:
+                cluster.append(j)
+        for k in cluster:
+            used.add(k)
+
+        if len(cluster) == 1:
+            merged.append(boreholes[i])
+            continue
+
+        n_clusters_collapsed += 1
+        group = [boreholes[k] for k in cluster]
+        # 대표: strata 항목이 가장 많은 시추공
+        rep = max(group, key=lambda b: len(b.get("strata", []) or []))
+        avg_lng = float(np.mean([b["longitude"] for b in group]))
+        avg_lat = float(np.mean([b["latitude"] for b in group]))
+        avg_elev = float(np.mean([b.get("elevation", 0.0) for b in group]))
+        merged_bh = dict(rep)
+        merged_bh["longitude"] = avg_lng
+        merged_bh["latitude"] = avg_lat
+        merged_bh["elevation"] = avg_elev
+        merged_bh["_merged_from"] = [b.get("id") for b in group]
+        merged.append(merged_bh)
+
+    if n_clusters_collapsed:
+        logger.warning(
+            "[RBF] 근접 시추공 병합: %d개 → %d개 (%d개 군집 통합, 임계 %.1fm)",
+            len(boreholes), len(merged), n_clusters_collapsed, threshold_m,
+        )
+    return merged
+
 
 class GeologicalRBF:
     """
@@ -40,7 +126,7 @@ class GeologicalRBF:
             found = False
             for s in bh.get("strata", []):
                 if s.get("strata_group") == layer_name:
-                    elevations.append(elev - s.get("depth_bottom", 0.0))
+                    elevations.append(elev - s.get("depth_top", 0.0))
                     found = True
                     break
 
@@ -52,14 +138,24 @@ class GeologicalRBF:
                     elevations.append(bot if bot is not None else elev)
                 elif layer_name == "soft_rock":
                     bot = self._get_bh_layer_bottom(bh, "weathered_rock")
+                    if bot is None:
+                        bot = self._get_bh_layer_bottom(bh, "soil")
                     elevations.append(bot if bot is not None else elev)
                 elif layer_name == "normal_rock":
                     bot = self._get_bh_layer_bottom(bh, "soft_rock")
+                    if bot is None:
+                        bot = self._get_bh_layer_bottom(bh, "weathered_rock")
+                    if bot is None:
+                        bot = self._get_bh_layer_bottom(bh, "soil")
                     elevations.append(bot if bot is not None else elev)
                 else:  # hard_rock
                     bot = self._get_bh_layer_bottom(bh, "normal_rock")
                     if bot is None:
                         bot = self._get_bh_layer_bottom(bh, "soft_rock")
+                    if bot is None:
+                        bot = self._get_bh_layer_bottom(bh, "weathered_rock")
+                    if bot is None:
+                        bot = self._get_bh_layer_bottom(bh, "soil")
                     elevations.append(bot if bot is not None else elev)
 
         return np.array(elevations)

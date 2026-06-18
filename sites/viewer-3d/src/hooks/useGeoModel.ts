@@ -135,7 +135,7 @@ export function useGeoModel(
 
   useEffect(() => {
     const scene = sceneRef.current
-    if (!scene || !bbox || boreholes.length === 0) return
+    if (!scene || !bbox) return
 
     let active = true
 
@@ -200,6 +200,18 @@ export function useGeoModel(
     }
 
     setStatus("지표면 지도 텍스처 생성 중...")
+    if (boreholes.length === 0) {
+      if (markerRef.current) markerRef.current.visible = false
+      bhPosRef.current = {}
+      smoothMeshRef.current = {}
+      voxelMeshRef.current = {}
+      bhGroupRef.current = null
+      drapeRef.current = null
+      drapeMatRef.current = null
+      setStatus("선택한 데이터 조건에 해당하는 시추공이 없습니다.")
+      return
+    }
+
     const drapeSeq = ++drapeTextureSeqRef.current
     const drapeCanvasPromise = buildAreaCanvas(bbox as [number, number, number, number], LAYER_SETS[basemapRef.current])
       .then((drapeCanvas) => {
@@ -258,6 +270,7 @@ export function useGeoModel(
         lngWidthM: resultLngWidthM,
         latWidthM: resultLatWidthM,
         skippedDeep,
+        diag,
       } = msg
 
       const drapeGeo = buildSurfaceMesh(elevGrid, boxW, boxD, mScale)
@@ -317,14 +330,14 @@ export function useGeoModel(
         // "@ext" = 연장 모드 메쉬 — 연장분이 유효 두께에 흡수된 동일 지층이므로 관측 메쉬와 동일 재질
         const baseType = type.endsWith("@ext") ? type.slice(0, -4) : type
         const s = LAYER_STACK.indexOf(baseType as any)
-        const baseOpacity = 0.68
+        const baseOpacity = 1.0
         const mat = new THREE.MeshStandardMaterial({
           color: LAYER_COLOR[baseType] ?? LAYER_COLOR.unknown,
           roughness: 0.92,
           side: THREE.DoubleSide,
-          transparent: true,
+          transparent: false,
           opacity: baseOpacity,
-          depthWrite: false,
+          depthWrite: true,
           polygonOffset: true,
           polygonOffsetFactor: (s >= 0 ? s + 1 : 1) * 1.5,
           polygonOffsetUnits: (s >= 0 ? s + 1 : 1) * 1.5,
@@ -420,10 +433,17 @@ export function useGeoModel(
 
       bhPosRef.current = posMap
       fitCamera()
+      const LAYER_KO = ["토사", "풍화암", "연암", "보통암", "경암"]
+      const diagStr = diag
+        ? ` · [진단] 최심관측 토${diag.bhByDeepest[0]}/풍${diag.bhByDeepest[1]}/연${diag.bhByDeepest[2]}/보${diag.bhByDeepest[3]}/경${diag.bhByDeepest[4]}` +
+          ` · 배경암 ${LAYER_KO[diag.bgRank] ?? "-"} · 바닥점유 토${diag.bottomFill[0]}/풍${diag.bottomFill[1]}/연${diag.bottomFill[2]}/보${diag.bottomFill[3]}/경${diag.bottomFill[4]}` +
+          ` · 최대경사 ${diag.maxSlope} m/m(${LAYER_KO[diag.maxSlopeLayer] ?? "-"})`
+        : ""
       setStatus(
         `완료 · 시추공 ${boreholes.length}개 · 격자 ${N}x${N}x${MZ} (dz ${dz.toFixed(1)}m) · ` +
           `유효 반경 ${confRadiusM.toFixed(0)}m · 영역 ${resultLngWidthM.toFixed(0)}m x ${resultLatWidthM.toFixed(0)}m` +
-          (skippedDeep > 0 ? ` · ⚠️ 심도 이상 ${skippedDeep}공 보간 제외 — 확인 필요` : ""),
+          (skippedDeep > 0 ? ` · ⚠️ 심도 이상 ${skippedDeep}공 보간 제외 — 확인 필요` : "") +
+          diagStr,
       )
     }
 
@@ -504,11 +524,11 @@ export function useGeoModel(
       return
     }
 
-    // 선택됨 → 지층 반투명 처리 (opacity 0.45: 어두운 배경에서도 지층 형태 인식 가능)
+    // 선택됨 → 지층 반투명 처리. 선택 마커를 보이게 하되 지층 구조가 흐려지지 않도록 유지한다.
     for (const mesh of allLayerMeshes) {
       const mat = mesh.material as THREE.MeshStandardMaterial
       mat.transparent = true
-      mat.opacity = 0.36
+      mat.opacity = 0.62
       mat.depthWrite = false
       mat.needsUpdate = true
     }

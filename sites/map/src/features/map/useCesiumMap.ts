@@ -86,9 +86,10 @@ export function useCesiumMap(
 
     viewerRef.current = viewer
 
-    // 수원시 영통구 중심 — 광역 뷰로 초기화
+    // 남한 전역 광역 뷰로 초기화 (Rectangle 기반 — 창 크기와 무관하게 전국이 한눈에 들어옴)
+    // 좌하단(서·남) lng/lat, 우상단(동·북) lng/lat. 동쪽은 울릉도·독도까지 포함.
     viewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(127.0601, 37.2625, 80000),
+      destination: Cesium.Rectangle.fromDegrees(125.0, 33.5, 131.0, 38.7),
     })
 
     // 클릭 이벤트용 ScreenSpaceEventHandler 등록
@@ -309,7 +310,7 @@ export function useCesiumMap(
               if (i === 1) return Cesium.Cartesian3.fromRadians(r.east, r.north)
               if (i === 2) return Cesium.Cartesian3.fromRadians(r.east, r.south)
               if (i === 3) return Cesium.Cartesian3.fromRadians(r.west, r.south)
-            }, false),
+            }, false) as any,
             point: {
               pixelSize: 12,
               color: Cesium.Color.WHITE,
@@ -520,7 +521,7 @@ export function useCesiumMap(
           if (i === 1) return Cesium.Cartesian3.fromRadians(r.east, r.north)
           if (i === 2) return Cesium.Cartesian3.fromRadians(r.east, r.south)
           if (i === 3) return Cesium.Cartesian3.fromRadians(r.west, r.south)
-        }, false),
+        }, false) as any,
         point: {
           pixelSize: 12,
           color: Cesium.Color.WHITE,

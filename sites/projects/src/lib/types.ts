@@ -15,8 +15,13 @@ export interface Borehole {
   latitude: number
   elevation: number | null
   strata: Stratum[]
-  is_supplementary: boolean   // false=원본 기존, true=신규 보완
+  is_supplementary?: boolean
+  source_crs?: string | null
   source_file?: string | null
+  data_origin?: "public" | "user_upload" | "manual_input" | "test" | string
+  project_role?: "existing" | "new" | "duplicate_linked" | "excluded" | string | null
+  linked_reason?: string | null
+  registered_from_job_id?: number | null
   data_status?: "original" | "supplementary" | "modified_draft" | "modified_pending_review" | "modified_approved" | string
   source_borehole_id?: number | null
   override_id?: number | null

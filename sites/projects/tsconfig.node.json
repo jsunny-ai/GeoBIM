@@ -6,8 +6,12 @@
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
+    "allowJs": true,
     "strict": true,
-    "noEmit": true
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "../../.vite-cache2/projects-tsbuild"
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.mjs"]
 }

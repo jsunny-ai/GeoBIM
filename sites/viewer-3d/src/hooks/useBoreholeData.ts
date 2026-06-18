@@ -27,7 +27,7 @@ export function useBoreholeData(
           .then(async (res) => {
             if (!res.ok) throw new Error(`프로젝트 시추공 API 오류: HTTP ${res.status}`)
             const data = await res.json()
-            return data.boreholes ?? []
+            return (data.boreholes ?? []) as Borehole[]
           })
       : fetchBoreholesByBbox(bbox as [number, number, number, number], polygon || undefined, boreholeIds)
 
@@ -143,4 +143,3 @@ function isInsidePolygon(lng: number, lat: number, polygon: { lng: number; lat: 
   }
   return inside
 }
-

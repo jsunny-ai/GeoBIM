@@ -9,8 +9,7 @@ import type { Project } from "@/lib/types"
 import { VIEWER_3D_URL, MAP_URL } from "@shared/urls"
 
 function fallbackBoreholeCount(project: Project) {
-  const selectedIds = project.bbox?.borehole_ids
-  return (Array.isArray(selectedIds) ? selectedIds.length : 0) + project.borehole_count
+  return project.borehole_count
 }
 
 function ProjectBoreholeCount({ project }: { project: Project }) {

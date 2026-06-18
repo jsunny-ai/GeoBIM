@@ -52,11 +52,13 @@ services:
       PDF_ODL_HYBRID_ENABLED: "true"
       PDF_ODL_HYBRID_URL: http://host.docker.internal:5002
       PDF_ODL_HYBRID_MODE: full
+      PDF_MANUAL_ODL_ENABLED: "false"
       PDF_SOURCE_WINDOWS_ROOT: "C:\\antigravity\\#1_1_PDF_Download\\PDF_Storage"
       PDF_SOURCE_MOUNT_DIR: /pdf_storage
       PDF_BOX_OCR_ENABLED: "true"
+      PDF_OCR_PROVIDER: tesseract
       PDF_BOX_OCR_LANG: kor+eng
-      PDF_BOX_OCR_SCALE: "3.0"
+      PDF_BOX_OCR_SCALE: "2.0"
       ENVIRONMENT: development
       DEBUG: "true"
     ports:

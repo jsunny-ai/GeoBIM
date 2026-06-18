@@ -19,6 +19,10 @@ type FilterType  = "all" | "original" | "supplementary"
 
 const UPLOAD_BASE = UPLOAD_URL
 
+function isProjectNew(borehole: Borehole) {
+  return borehole.project_role ? borehole.project_role === "new" : Boolean(borehole.is_supplementary)
+}
+
 // 배지 컴포넌트
 function BoreholeTypeBadge({ isSupplementary, status }: { isSupplementary: boolean; status?: string }) {
   if (status?.startsWith("modified_")) {
@@ -36,6 +40,20 @@ function BoreholeTypeBadge({ isSupplementary, status }: { isSupplementary: boole
   ) : (
     <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-stone-200 text-stone-700 border border-stone-300">
       기존
+    </span>
+  )
+}
+
+function BoreholeOriginBadge({ origin }: { origin?: string }) {
+  const label =
+    origin === "user_upload" ? "사용자" :
+    origin === "manual_input" ? "직접" :
+    origin === "test" ? "테스트" :
+    "공공"
+
+  return (
+    <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-white text-stone-700 border border-stone-300">
+      {label}
     </span>
   )
 }
@@ -60,13 +78,13 @@ export default function ProjectDetailPage() {
 
   // 필터링된 목록
   const filteredBoreholes = (boreholes ?? []).filter(b => {
-    if (filter === "original")      return !b.is_supplementary
-    if (filter === "supplementary") return b.is_supplementary
+    if (filter === "original")      return !isProjectNew(b)
+    if (filter === "supplementary") return isProjectNew(b)
     return true
   })
 
-  const origCount  = (boreholes ?? []).filter(b => !b.is_supplementary).length
-  const suppCount  = (boreholes ?? []).filter(b =>  b.is_supplementary).length
+  const origCount  = (boreholes ?? []).filter(b => !isProjectNew(b)).length
+  const suppCount  = (boreholes ?? []).filter(b =>  isProjectNew(b)).length
   const totalCount = (boreholes ?? []).length
 
   function handleSelectBorehole(b: Borehole) {
@@ -183,7 +201,8 @@ export default function ProjectDetailPage() {
                     <div className="flex items-center justify-between gap-1">
                       <span className="font-medium truncate">{b.name}</span>
                       <div className="flex items-center gap-1 shrink-0">
-                        <BoreholeTypeBadge isSupplementary={b.is_supplementary} status={b.data_status} />
+                        <BoreholeTypeBadge isSupplementary={isProjectNew(b)} status={b.data_status} />
+                        <BoreholeOriginBadge origin={b.data_origin} />
                         <ChevronRight className="h-3 w-3 text-muted-foreground" />
                       </div>
                     </div>
@@ -398,13 +417,16 @@ export default function ProjectDetailPage() {
                                     className={`border-b border-border/40 hover:bg-muted/20 transition-colors ${
                                       selected?.id === b.id
                                         ? "bg-stone-100"
-                                        : b.is_supplementary
+                                        : isProjectNew(b)
                                         ? "bg-stone-100"
                                         : ""
                                     }`}
                                   >
                                     <td className="px-3 py-3">
-                                      <BoreholeTypeBadge isSupplementary={b.is_supplementary} status={b.data_status} />
+                                      <div className="flex gap-1">
+                                        <BoreholeTypeBadge isSupplementary={isProjectNew(b)} status={b.data_status} />
+                                        <BoreholeOriginBadge origin={b.data_origin} />
+                                      </div>
                                     </td>
                                     <td className="px-3 py-3 font-semibold">{b.name}</td>
                                     <td className="px-3 py-3 text-muted-foreground">{b.elevation != null ? `${b.elevation.toFixed(2)}m` : "-"}</td>
@@ -446,7 +468,8 @@ export default function ProjectDetailPage() {
                         <ArrowLeft className="h-4 w-4" />
                       </button>
                       <h2 className="text-base font-semibold">{selected.name}</h2>
-                      <BoreholeTypeBadge isSupplementary={selected.is_supplementary} status={selected.data_status} />
+                      <BoreholeTypeBadge isSupplementary={isProjectNew(selected)} status={selected.data_status} />
+                      <BoreholeOriginBadge origin={selected.data_origin} />
                       {selected.strata.length > 0 && <Badge variant="slate" className="text-xs">{selected.strata.length}개 지층</Badge>}
                     </div>
                     <Button size="sm" variant={editing ? "secondary" : "outline"} className="h-7 text-xs" onClick={handleToggleEditing}>

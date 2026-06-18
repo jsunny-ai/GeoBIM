@@ -105,6 +105,7 @@ interface CreateBoreholePayload {
   longitude: number
   elevation?: number
   source_crs?: string
+  is_supplementary?: boolean
   strata: StratumInput[]
 }
 
@@ -136,21 +137,23 @@ export function useUpdateBorehole(id: number, projectId: number, isSupplementary
   return useMutation({
     mutationFn: async (payload: UpdateBoreholePayload) => {
       const { strata, ...coords } = payload
-      if (isSupplementary) {
-        if (Object.keys(coords).length > 0) {
-          await api.patch(`/boreholes/${id}`, coords)
-        }
-        if (strata !== undefined) {
-          await api.put(`/boreholes/${id}/strata`, { strata })
-        }
-        return
+      const coordinatePayload: Pick<UpdateBoreholePayload, "longitude" | "latitude"> = {}
+      if (coords.longitude !== undefined) coordinatePayload.longitude = coords.longitude
+      if (coords.latitude !== undefined) coordinatePayload.latitude = coords.latitude
+
+      if (Object.keys(coordinatePayload).length > 0) {
+        await api.patch(`/boreholes/${id}`, coordinatePayload)
       }
 
-      await api.put(`/boreholes/${id}/project-overrides/${projectId}`, {
-        ...coords,
-        strata,
-        status: "draft",
-      })
+      if (coords.elevation !== undefined || strata !== undefined) {
+        await api.post(`/boreholes/${id}/revisions`, {
+          elevation: coords.elevation,
+          strata,
+          reason: isSupplementary
+            ? "시추데이터 관리 뷰어에서 신규 시추공 데이터 수정"
+            : "시추데이터 관리 뷰어에서 기존 시추공 데이터 전역 수정",
+        })
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["borehole", id] })

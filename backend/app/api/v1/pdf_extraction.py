@@ -143,6 +143,7 @@ async def upload_pdf(
 async def upload_manual_pdf(
     project_id: int | None = Form(default=None),
     pdf_file: UploadFile = File(...),
+    is_supplementary: bool = Form(default=False),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
@@ -191,6 +192,7 @@ async def upload_manual_pdf(
         file_path=str(target_path),
         status=ExtractionJobStatus.PENDING,
         result={"manual": True, "auto_project": auto_project},
+        is_supplementary=is_supplementary,
     )
     db.add(job)
     await db.commit()
@@ -349,6 +351,14 @@ async def extract_job_boxes(
                 "created_at": job.created_at.isoformat(),
                 "updated_at": job.updated_at.isoformat(),
             }
+        except ValueError as exc:
+            sync_db.rollback()
+            job = sync_db.get(PdfExtractionJob, job_id)
+            if job is not None:
+                job.status = ExtractionJobStatus.FAILED
+                job.error = str(exc)
+                sync_db.commit()
+            raise HTTPException(status_code=400, detail=str(exc))
         except HTTPException:
             raise
         except Exception as exc:
@@ -395,6 +405,7 @@ async def approve_job(
                 project_id=job.project_id,
                 source_file=job.file_path,
                 is_supplementary=job.is_supplementary,
+                job_id=job.id,
             )
             sync_db.commit()
         except Exception as exc:

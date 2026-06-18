@@ -12,11 +12,11 @@ logging.getLogger(__name__).warning(f"[LANDXML] 로드된 파일: {__file__}")
 
 LAYER_LABELS: dict[str, str] = {
     "ground_surface": "지표면",
-    "soil":           "풍화암_상부면",
-    "weathered_rock": "연암_상부면",
-    "soft_rock":      "보통암_상부면",
-    "normal_rock":    "경암_상부면",
-    "hard_rock":      "최하단_경계면",
+    "soil":           "토사_상부면",
+    "weathered_rock": "풍화암_상부면",
+    "soft_rock":      "연암_상부면",
+    "normal_rock":    "보통암_상부면",
+    "hard_rock":      "경암_상부면",
 }
 
 # GRS80 타원체 상수

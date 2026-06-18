@@ -20,11 +20,18 @@ from app.api.v1.rbf import RBFInterpolationRequest
 from app.models import Borehole
 from app.services.landxml_export import grid_to_landxml
 from app.services.phantom_points import generate_phantom_points
-from app.services.rbf_interpolation import GeologicalRBF
+from app.services.rbf_interpolation import GeologicalRBF, merge_nearby_boreholes
 
 router = APIRouter()
 
-AVAILABLE_LAYERS = ["ground_surface", "soil", "weathered_rock", "soft_rock", "normal_rock"]
+AVAILABLE_LAYERS = [
+    "ground_surface",
+    "soil",
+    "weathered_rock",
+    "soft_rock",
+    "normal_rock",
+    "hard_rock",
+]
 
 
 class LandXMLExportRequest(BaseModel):
@@ -32,7 +39,8 @@ class LandXMLExportRequest(BaseModel):
     project_id: int | None = None
     grid_res: int = 48
     boreholes: list[dict] | None = None        # None → DB에서 조회
-    layers: list[str] = ["soil", "weathered_rock", "soft_rock", "hard_rock"]
+    borehole_ids: list[int] | None = None
+    layers: list[str] = ["weathered_rock", "soft_rock", "normal_rock", "hard_rock"]
     mode: str = "merge"                        # "merge" | "new_only"
 
 
@@ -64,6 +72,8 @@ async def export_landxml(
         )
         if body.project_id is not None:
             stmt = stmt.where(Borehole.project_id == body.project_id)
+        if body.borehole_ids:
+            stmt = stmt.where(Borehole.id.in_(body.borehole_ids))
         rows = (await db.execute(stmt)).scalars().all()
 
         loc_stmt = select(
@@ -91,6 +101,11 @@ async def export_landxml(
         raise HTTPException(status_code=422, detail="보간에 사용할 시추공 데이터가 없습니다.")
 
     # ── 2. RBF 보간 ──────────────────────────────────────────────────────────
+    # 근접/중복 시추공(같은 부지 다중 로그·재시추)을 먼저 병합한다.
+    # 좌표가 cm 단위로 겹친 채 보간에 들어가면 RBF 행렬이 특이해져
+    # 격자 Z가 전역 발산하므로, 팬텀 생성·보간 이전에 반드시 수행한다.
+    all_bhs = merge_nearby_boreholes(all_bhs, threshold_m=2.0)
+
     phantom_bhs = generate_phantom_points(all_bhs, scale=1.8, count=12)
     rbf_engine = GeologicalRBF(all_bhs, phantom_bhs)
     grid_result = rbf_engine.build_grid(body.bbox, res=body.grid_res)

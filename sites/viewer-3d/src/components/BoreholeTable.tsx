@@ -58,6 +58,7 @@ interface BoreholeTableProps {
   setSelectedBh: (id: string | null) => void
   focusBorehole: (id: string) => void
   onUpdateElevation?: (bhId: string, newElev: number) => Promise<void>
+  onEditData?: (b: Borehole & { dem_elevation?: number }) => void
   onInspectData?: (b: Borehole & { dem_elevation?: number }) => void // [v4.2] PDF 대조 패널 열기
 }
 
@@ -68,8 +69,9 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
   focusBorehole,
   onUpdateElevation,
   onInspectData,
+  onEditData,
 }) => {
-  const [filterMode, setFilterMode] = useState<"all" | "warn" | "edited">("all")
+  const [filterMode, setFilterMode] = useState<"all" | "existing" | "new" | "warn" | "edited">("all")
   const [editingBhId, setEditingBhId] = useState<string | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
@@ -111,10 +113,14 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
   // [v4.2] 이상 심도·개정 상태 헬퍼
   const isDepthWarn = (b: Borehole) => Boolean((b as any).depth_warning)
   const isRevised = (b: Borehole) => (b as any).data_status === "revised"
+  const isProjectNew = (b: Borehole) =>
+    (b as any).project_role ? (b as any).project_role === "new" : Boolean((b as any).is_supplementary)
 
   // 2. 필터링 대상 시추공 분류
   const filteredBoreholes = boreholes.filter((b) => {
     const { diff } = getElevationInfo(b)
+    if (filterMode === "existing") return !isProjectNew(b)
+    if (filterMode === "new") return isProjectNew(b)
     if (filterMode === "warn") return diff >= 0.5 || isDepthWarn(b)
     if (filterMode === "edited") return editLogs[b.id] !== undefined || isRevised(b)
     return true
@@ -173,13 +179,19 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
 
       {/* B. 필터링 버튼 바 */}
       <div style={{ display: "flex", padding: "6px 10px", gap: 4, borderBottom: `1px solid ${C.border}`, background: "rgba(242,237,230,.6)" }}>
-        {(["all", "warn", "edited"] as const).map((mode) => {
+        {(["all", "existing", "new", "warn", "edited"] as const).map((mode) => {
           const active = filterMode === mode
+          const label = mode === "all" ? "전체" : mode === "existing" ? "기존" : mode === "new" ? "신규" : mode === "warn" ? "경고" : "보정"
           const labels = { all: "전체", warn: "경고대상", edited: "보정이력" }
           return (
             <button
               key={mode}
-              onClick={() => setFilterMode(mode)}
+              onClick={() => {
+                setFilterMode(mode)
+                if (mode === "all" || mode === "existing" || mode === "new") {
+                  window.dispatchEvent(new CustomEvent("geobim:model-source-change", { detail: mode }))
+                }
+              }}
               style={{
                 flex: 1,
                 fontSize: 10,
@@ -193,7 +205,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                 fontFamily: "'Noto Sans KR',sans-serif",
               }}
             >
-              {labels[mode]}
+              {label}
             </button>
           )
         })}
@@ -301,6 +313,26 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                           />
                         )
                       })}
+                      {onEditData && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onEditData(b) }}
+                          title="지층 데이터 편집"
+                          style={{
+                            float: "right",
+                            marginLeft: 4,
+                            padding: "1px 5px",
+                            borderRadius: 3,
+                            border: `1px solid ${C.border}`,
+                            background: "transparent",
+                            color: C.secondary,
+                            cursor: "pointer",
+                            fontSize: 10,
+                            fontFamily: "'Noto Sans KR',sans-serif",
+                          }}
+                        >
+                          편집
+                        </button>
+                      )}
                     </td>
                   </tr>
 

@@ -1,11 +1,11 @@
-"""개발 환경 시드 데이터.
+"""Development seed data.
 
-사용법:
+Usage:
     cd backend
     uv run python -m seeds.dev_seed
 
-생성 데이터:
-    - 사용자: dev@geobim.local / dev  (role=admin)
+Creates or repairs:
+    - user: kunhwa / 1234  (role=admin)
 """
 
 import asyncio
@@ -22,18 +22,22 @@ async def main() -> None:
     engine = create_async_engine(settings.database_url, echo=False)
 
     async with AsyncSession(engine) as session:
-        # 중복 체크
         result = await session.execute(
-            select(User).where(User.email == "dev@geobim.local")
+            select(User).where(User.email == "kunhwa")
         )
         existing = result.scalar_one_or_none()
 
         if existing is not None:
-            print(f"[seed] 사용자 이미 존재: {existing.email} (id={existing.id})")
+            existing.hashed_password = hash_password("1234")
+            existing.role = UserRole.ADMIN
+            existing.full_name = existing.full_name or "Dev User"
+            existing.is_active = True
+            await session.commit()
+            print(f"[seed] repaired user: {existing.email} (id={existing.id})")
         else:
             user = User(
-                email="dev@geobim.local",
-                hashed_password=hash_password("dev"),
+                email="kunhwa",
+                hashed_password=hash_password("1234"),
                 role=UserRole.ADMIN,
                 full_name="Dev User",
                 is_active=True,
@@ -41,7 +45,7 @@ async def main() -> None:
             session.add(user)
             await session.commit()
             await session.refresh(user)
-            print(f"[seed] 사용자 생성 완료: {user.email} (id={user.id})")
+            print(f"[seed] created user: {user.email} (id={user.id})")
 
     await engine.dispose()
 

@@ -25,6 +25,7 @@ export interface RBFGrids {
   soil: number[][]
   weathered_rock: number[][]
   soft_rock: number[][]
+  normal_rock: number[][]
   hard_rock: number[][]
   [key: string]: number[][]
 }

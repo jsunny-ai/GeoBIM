@@ -10,7 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_db
-from app.models import Borehole, BoreholeRevision, PdfExtractionJob, Project, ProjectBoreholeOverride, Stratum, User
+from app.models import (
+    Borehole,
+    BoreholeRevision,
+    PdfExtractionJob,
+    Project,
+    ProjectBoreholeLink,
+    ProjectBoreholeOverride,
+    Stratum,
+    User,
+)
 from app.services.normalization import normalize_strata_group
 from app.services.pdf_path_resolver import pdf_display_name, resolve_pdf_path
 
@@ -106,8 +115,11 @@ def _borehole_dict(b: Borehole, loc_json: str | None, *, include_strata: bool = 
         "elevation": b.elevation,
         "source_crs": b.source_crs,
         "source_file": b.source_file,
+        "data_origin": getattr(b, "data_origin", "public"),
         "is_supplementary": getattr(b, "is_supplementary", False),
         "data_status": "supplementary" if getattr(b, "is_supplementary", False) else "original",
+        "project_role": None,
+        "linked_reason": None,
         "source_borehole_id": None,
         "override_id": None,
         "created_at": b.created_at.isoformat(),
@@ -147,6 +159,21 @@ def _stratum_payload_dict(s: dict, index: int) -> dict:
         "n_value": s.get("n_value"),
         "uscs_code": s.get("uscs_code"),
     }
+
+
+def _parse_bbox_filter(bbox: str | None) -> tuple[float, float, float, float] | None:
+    if not bbox:
+        return None
+    try:
+        parts = [float(part.strip()) for part in bbox.split(",")]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="bbox must be minLng,minLat,maxLng,maxLat")
+    if len(parts) != 4:
+        raise HTTPException(status_code=422, detail="bbox must be minLng,minLat,maxLng,maxLat")
+    min_lng, min_lat, max_lng, max_lat = parts
+    if min_lng > max_lng or min_lat > max_lat:
+        raise HTTPException(status_code=422, detail="bbox min values must be less than max values")
+    return min_lng, min_lat, max_lng, max_lat
 
 
 async def _latest_revision(db: AsyncSession, borehole_id: int) -> BoreholeRevision | None:
@@ -280,9 +307,17 @@ async def create_borehole(
         source_crs=body.source_crs or "EPSG:4326",
         location=func.ST_SetSRID(func.ST_MakePoint(body.longitude, body.latitude), 4326),
         is_supplementary=body.is_supplementary,
+        data_origin="manual_input" if body.is_supplementary else "public",
     )
     db.add(borehole)
     await db.flush()
+
+    db.add(ProjectBoreholeLink(
+        project_id=body.project_id,
+        borehole_id=borehole.id,
+        project_role="new" if body.is_supplementary else "existing",
+        linked_reason="manual_created" if body.is_supplementary else "migrated",
+    ))
 
     if body.strata:
         db.add_all([
@@ -317,6 +352,7 @@ async def create_borehole(
 async def list_boreholes(
     project_id: int | None = None,
     ids: str | None = Query(None),
+    bbox: str | None = Query(None),
     include_strata: bool = Query(False),
     limit: int = Query(10000, ge=1, le=50000),
     offset: int = Query(0, ge=0),
@@ -340,6 +376,12 @@ async def list_boreholes(
     if project_id is not None:
         base_stmt = base_stmt.where(Borehole.project_id == project_id)
 
+    bbox_filter = _parse_bbox_filter(bbox)
+    if bbox_filter is not None:
+        min_lng, min_lat, max_lng, max_lat = bbox_filter
+        envelope = func.ST_MakeEnvelope(min_lng, min_lat, max_lng, max_lat, 4326)
+        base_stmt = base_stmt.where(func.ST_Intersects(cast(Borehole.location, Geometry), envelope))
+
     count_stmt = select(func.count()).select_from(base_stmt.subquery())
     total: int = (await db.execute(count_stmt)).scalar_one()
 
@@ -352,6 +394,10 @@ async def list_boreholes(
             ids_stmt = ids_stmt.where(Borehole.id.in_(id_filter))
         if project_id is not None:
             ids_stmt = ids_stmt.where(Borehole.project_id == project_id)
+        if bbox_filter is not None:
+            min_lng, min_lat, max_lng, max_lat = bbox_filter
+            envelope = func.ST_MakeEnvelope(min_lng, min_lat, max_lng, max_lat, 4326)
+            ids_stmt = ids_stmt.where(func.ST_Intersects(cast(Borehole.location, Geometry), envelope))
         ids_stmt = ids_stmt.limit(limit).offset(offset)
 
         orm_stmt = (
@@ -696,6 +742,35 @@ async def replace_strata(
         await db.refresh(s)
 
     return sorted([_stratum_dict(s) for s in new_strata], key=lambda x: x["depth_top"])
+
+
+@router.delete("/{borehole_id}")
+async def delete_borehole(
+    borehole_id: int,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    if _current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="관리자만 시추공을 삭제할 수 있습니다.")
+
+    result = await db.execute(
+        select(Borehole).where(Borehole.id == borehole_id, Borehole.deleted_at.is_(None))
+    )
+    borehole = result.scalar_one_or_none()
+    if borehole is None:
+        raise HTTPException(status_code=404, detail="시추공을 찾을 수 없습니다.")
+
+    borehole.deleted_at = func.now()
+    await db.execute(
+        ProjectBoreholeLink.__table__.update()
+        .where(
+            ProjectBoreholeLink.borehole_id == borehole_id,
+            ProjectBoreholeLink.deleted_at.is_(None),
+        )
+        .values(deleted_at=func.now())
+    )
+    await db.commit()
+    return {"ok": True, "id": borehole_id}
 
 
 @router.put("/{borehole_id}/project-overrides/{project_id}")

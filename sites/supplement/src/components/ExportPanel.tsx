@@ -18,10 +18,10 @@ const C = {
 // 체크박스 목록 (위→아래 지질 순서)
 const LAYER_CONFIG = [
   { key: "ground_surface", label: "지표면",     color: "#4a7c35" },
-  { key: "soil",           label: "풍화암 상부면", color: "#C4A57B" },
-  { key: "weathered_rock", label: "연암 상부면",   color: "#6B8E5A" },
-  { key: "soft_rock",      label: "보통암 상부면", color: "#5F6552" },
-  { key: "normal_rock",    label: "경암 상부면",   color: "#3D3D3D" },
+  { key: "weathered_rock", label: "풍화암 상부면", color: "#C4A57B" },
+  { key: "soft_rock",      label: "연암 상부면",   color: "#6B8E5A" },
+  { key: "normal_rock",    label: "보통암 상부면", color: "#5F6552" },
+  { key: "hard_rock",      label: "경암 상부면",   color: "#3D3D3D" },
 ]
 
 // 단면 시각화 지층 블록 (위→아래)
@@ -63,17 +63,16 @@ function SectionPreview({ layers }: { layers: string[] }) {
 
   // 각 경계면의 y 위치 (지층 블록 사이 경계)
   // ground_surface : 지표면 하단 = 토사 상단 = yOffsets[1]
-  // soil           : 토사 하단  = 풍화암 상단 = yOffsets[2]
-  // weathered_rock : 풍화암 하단 = 연암 상단  = yOffsets[3]
-  // soft_rock      : 연암 하단  = 보통암 상단 = yOffsets[4]
-  // normal_rock    : 보통암 하단 = 경암 상단  = yOffsets[5]
-  // hard_rock      : 경암 하단 (최하단)        = yOffsets[6]
+  // weathered_rock : 풍화암 상단 = yOffsets[2]
+  // soft_rock      : 연암 상단  = yOffsets[3]
+  // normal_rock    : 보통암 상단 = yOffsets[4]
+  // hard_rock      : 경암 상단  = yOffsets[5]
   const BOUNDARIES = [
     { key: "ground_surface", y: yOffsets[1],     color: "#4a7c35", label: "지표면"     },
-    { key: "soil",           y: yOffsets[2],     color: "#C4A57B", label: "풍화암 상부면" },
-    { key: "weathered_rock", y: yOffsets[3],     color: "#6B8E5A", label: "연암 상부면"   },
-    { key: "soft_rock",      y: yOffsets[4],     color: "#5F6552", label: "보통암 상부면" },
-    { key: "normal_rock",    y: yOffsets[5],     color: "#3D3D3D", label: "경암 상부면"   },
+    { key: "weathered_rock", y: yOffsets[2],     color: "#C4A57B", label: "풍화암 상부면" },
+    { key: "soft_rock",      y: yOffsets[3],     color: "#6B8E5A", label: "연암 상부면"   },
+    { key: "normal_rock",    y: yOffsets[4],     color: "#5F6552", label: "보통암 상부면" },
+    { key: "hard_rock",      y: yOffsets[5],     color: "#3D3D3D", label: "경암 상부면"   },
   ]
 
   return (

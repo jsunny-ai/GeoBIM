@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import (
     ExtractionJobStatus,
@@ -29,7 +29,7 @@ class ORMModel(BaseModel):
 # User
 # ============================================================================
 class UserBase(BaseModel):
-    email: EmailStr
+    email: str
     full_name: str | None = None
     role: UserRole = UserRole.DESIGNER
 

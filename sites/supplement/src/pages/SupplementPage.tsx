@@ -38,7 +38,7 @@ export default function SupplementPage() {
   // ── 내보내기 옵션 ──────────────────────────────────────────────
   const [exportOpts, setExportOpts] = useState<ExportOptions>({
     mode: "merge",
-    layers: ["soil", "weathered_rock", "soft_rock", "hard_rock"],
+    layers: ["weathered_rock", "soft_rock", "normal_rock", "hard_rock"],
     gridRes: 48,
   })
 
@@ -49,7 +49,7 @@ export default function SupplementPage() {
   useEffect(() => {
     if (!bbox) return
     setLoadState("loading")
-    fetchBoreholes(bbox, projectId, boreholeIds)
+    fetchBoreholes(bbox, projectId, boreholeIds, polygon)
       .then((bhs) => {
         setExistingBhs(bhs)
         setLoadState("done")
@@ -103,6 +103,7 @@ export default function SupplementPage() {
         project_id: projectId,
         grid_res: exportOpts.gridRes,
         boreholes,
+        borehole_ids: boreholeIds,
         layers: exportOpts.layers,
         mode: exportOpts.mode,
       }

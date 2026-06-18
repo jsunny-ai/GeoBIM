@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_db
 from app.api.v1.boreholes import _apply_revision, _latest_revision_map
-from app.models import Borehole, Project, ProjectBoreholeOverride, Stratum, User
+from app.models import Borehole, Project, ProjectBoreholeLink, ProjectBoreholeOverride, Stratum, User
 from app.schemas import ProjectRead, ProjectCreate
 from app.services.normalization import normalize_strata_group
 
@@ -58,8 +58,12 @@ def _borehole_dict(b: Borehole, loc_json: str | None) -> dict:
         "elevation": b.elevation,
         "source_crs": b.source_crs,
         "source_file": b.source_file,
+        "data_origin": getattr(b, "data_origin", "public"),
         "is_supplementary": b.is_supplementary,
         "data_status": "supplementary" if b.is_supplementary else "original",
+        "project_role": None,
+        "linked_reason": None,
+        "registered_from_job_id": None,
         "source_borehole_id": None,
         "override_id": None,
         "created_at": b.created_at.isoformat(),
@@ -106,6 +110,22 @@ def _apply_override(data: dict, override: ProjectBoreholeOverride) -> dict:
     return merged
 
 
+def _apply_project_link(data: dict, link: ProjectBoreholeLink) -> dict:
+    role = link.project_role or "existing"
+    merged = {**data}
+    merged.update(
+        {
+            "project_id": link.project_id,
+            "project_role": role,
+            "linked_reason": link.linked_reason,
+            "registered_from_job_id": link.registered_from_job_id,
+            "is_supplementary": role == "new",
+            "data_status": role,
+        }
+    )
+    return merged
+
+
 @router.get("/")
 async def list_projects(
     has_bbox: bool | None = None,
@@ -127,7 +147,23 @@ async def list_projects(
             
     stmt = stmt.group_by(Project.id).order_by(Project.created_at.desc())
     rows = (await db.execute(stmt)).all()
-    return [_project_with_count(p, cnt) for p, cnt in rows]
+    projects = [_project_with_count(p, cnt) for p, cnt in rows]
+    if projects:
+        project_ids = [p["id"] for p in projects]
+        link_counts = (await db.execute(
+            select(ProjectBoreholeLink.project_id, func.count(ProjectBoreholeLink.id))
+            .where(
+                ProjectBoreholeLink.project_id.in_(project_ids),
+                ProjectBoreholeLink.deleted_at.is_(None),
+                ProjectBoreholeLink.project_role != "excluded",
+            )
+            .group_by(ProjectBoreholeLink.project_id)
+        )).all()
+        count_map = {project_id: count for project_id, count in link_counts}
+        for project_data in projects:
+            if project_data["id"] in count_map:
+                project_data["borehole_count"] = count_map[project_data["id"]]
+    return projects
 
 
 @router.get("/{project_id}/boreholes/effective")
@@ -147,6 +183,60 @@ async def list_effective_project_boreholes(
         raw_ids = project.bbox.get("borehole_ids")
         if isinstance(raw_ids, list):
             selected_ids = [int(v) for v in raw_ids if str(v).strip()]
+
+    project_links = (await db.execute(
+        select(ProjectBoreholeLink)
+        .options(selectinload(ProjectBoreholeLink.borehole).selectinload(Borehole.strata))
+        .where(
+            ProjectBoreholeLink.project_id == project_id,
+            ProjectBoreholeLink.deleted_at.is_(None),
+            ProjectBoreholeLink.project_role != "excluded",
+        )
+        .order_by(ProjectBoreholeLink.id)
+    )).scalars().all()
+    if project_links:
+        linked_boreholes = [link.borehole for link in project_links if link.borehole.deleted_at is None]
+        loc_rows = (await db.execute(
+            select(
+                Borehole.id,
+                func.ST_AsGeoJSON(Borehole.location).label("loc_json"),
+            ).where(Borehole.id.in_([b.id for b in linked_boreholes]))
+        )).all()
+        loc_map = {row.id: row.loc_json for row in loc_rows}
+
+        overrides = (await db.execute(
+            select(ProjectBoreholeOverride).where(
+                ProjectBoreholeOverride.project_id == project_id,
+                ProjectBoreholeOverride.source_borehole_id.in_([b.id for b in linked_boreholes]),
+                ProjectBoreholeOverride.deleted_at.is_(None),
+                ProjectBoreholeOverride.status != "rejected",
+            )
+        )).scalars().all()
+        override_map = {o.source_borehole_id: o for o in overrides}
+        latest_revs = await _latest_revision_map(db, [b.id for b in linked_boreholes])
+
+        rows: list[dict] = []
+        for link in project_links:
+            b = link.borehole
+            if b.deleted_at is not None:
+                continue
+            item = _borehole_dict(b, loc_map.get(b.id))
+            rev = latest_revs.get(b.id)
+            if rev is not None:
+                item = _apply_revision(item, rev)
+            override = override_map.get(b.id)
+            if override:
+                item = _apply_override(item, override)
+            rows.append(_apply_project_link(item, link))
+
+        return {
+            "boreholes": rows,
+            "count": len(rows),
+            "total": len(rows),
+            "selected_count": len([link for link in project_links if link.project_role == "existing"]),
+            "new_count": len([link for link in project_links if link.project_role == "new"]),
+            "override_count": len(overrides),
+        }
 
     base_boreholes: list[Borehole] = []
     if selected_ids:
@@ -235,7 +325,17 @@ async def get_project(
     if row is None:
         raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
     project, borehole_count = row
-    return _project_with_count(project, borehole_count)
+    data = _project_with_count(project, borehole_count)
+    link_count = (await db.execute(
+        select(func.count(ProjectBoreholeLink.id)).where(
+            ProjectBoreholeLink.project_id == project_id,
+            ProjectBoreholeLink.deleted_at.is_(None),
+            ProjectBoreholeLink.project_role != "excluded",
+        )
+    )).scalar_one()
+    if link_count:
+        data["borehole_count"] = link_count
+    return data
 
 
 @router.post("/", response_model=ProjectRead)

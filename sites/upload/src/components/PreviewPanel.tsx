@@ -12,6 +12,32 @@ import {
 } from "../lib/helpers"
 import { CoordinatePreviewMap } from "./CoordinatePreviewMap"
 
+type EditablePreviewRow = PreviewRow & {
+  __previewRowId: string
+  __previewGroupId: string
+}
+
+function editableRows(rows: PreviewRow[]): EditablePreviewRow[] {
+  let groupIndex = 0
+  let previousName: string | null = null
+  return rows.map((row, index) => {
+    const name = previewBoreholeName(row, index)
+    if (index === 0 || name !== previousName) {
+      groupIndex += 1
+      previousName = name
+    }
+    return {
+      ...row,
+      __previewRowId: `${index}-${name}`,
+      __previewGroupId: `group-${groupIndex}`,
+    }
+  })
+}
+
+function cleanRows(rows: EditablePreviewRow[]): PreviewRow[] {
+  return rows.map(({ __previewRowId, __previewGroupId, ...row }) => row)
+}
+
 export function PreviewPanel({
   job,
   saving,
@@ -21,7 +47,7 @@ export function PreviewPanel({
   saving: boolean
   onSave: (updatedRows: PreviewRow[]) => void
 }) {
-  const [editedRows, setEditedRows] = useState<PreviewRow[]>(() => job.result?.rows ?? [])
+  const [editedRows, setEditedRows] = useState<EditablePreviewRow[]>(() => editableRows(job.result?.rows ?? []))
   const [projectName, setProjectName] = useState(
     () => projectNameFromRows(job.result?.rows ?? []) ?? job.result?.project_name ?? "",
   )
@@ -32,13 +58,13 @@ export function PreviewPanel({
     setEditedRows((prev) => prev.map((row) => ({ ...row, "프로젝트명": value })))
   }
 
-  const applyCoordinateConversion = (boreholeName: string, sourceRow: PreviewRow) => {
+  const applyCoordinateConversion = (groupId: string, sourceRow: PreviewRow) => {
     void convertPreviewCoordinates(sourceRow)
       .then((converted) => {
         if (!converted) return
         setEditedRows((prev) =>
-          prev.map((row, idx) =>
-            previewBoreholeName(row, idx) === boreholeName
+          prev.map((row) =>
+            row.__previewGroupId === groupId
               ? {
                   ...row,
                   lon_wgs84: converted.lon_wgs84,
@@ -60,32 +86,20 @@ export function PreviewPanel({
     setSelectedBoreholeName(previewBoreholeName(editedRows[rowIndex] ?? {}, rowIndex))
     const sourceRowForConversion = { ...(editedRows[rowIndex] ?? {}), [key]: value }
     setEditedRows((prev) => {
-      // 1. 숫자값 파싱 처리
-      const isNumericField = ["lon_wgs84", "lat_wgs84", "상심도", "하심도", "표고"].includes(String(key))
-      let parsedValue: any = value
-      if (isNumericField && value !== "") {
-        const num = Number(value.replace(/,/g, ""))
-        if (!isNaN(num)) {
-          parsedValue = num
-        }
-      }
-
-      // 2. 시추공 메타데이터(시추공명, 위경도, 표고, 좌표계) 일괄 동기화 필드 여부
+      const parsedValue = value
       const isBoreholeMetaField = ["시추공명", "lon_wgs84", "lat_wgs84", "표고", "meta_crs"].includes(String(key))
       let nextRows = [...prev]
 
       if (isBoreholeMetaField) {
-        // 기존 시추공명을 기준으로 매칭하여 일괄 수정
-        const targetBoreholeName = prev[rowIndex]["시추공명"]
+        const targetGroupId = prev[rowIndex]?.__previewGroupId
         nextRows = prev.map((row, idx) => {
-          if (row["시추공명"] === targetBoreholeName || idx === rowIndex) {
+          if (row.__previewGroupId === targetGroupId || idx === rowIndex) {
             const updatedRow = { ...row, [key]: parsedValue }
             return updatedRow
           }
           return row
         })
       } else {
-        // 일반 셀은 단일 업데이트
         nextRows = prev.map((row, idx) => {
           if (idx === rowIndex) {
             return { ...row, [key]: parsedValue }
@@ -94,20 +108,17 @@ export function PreviewPanel({
         })
       }
 
-      // 3. 지층 심도 경계면 연속성 동기화 (상위 지층의 하심도 <-> 하위 지층의 상심도)
-      const currentBorehole = nextRows[rowIndex]["시추공명"]
+      const currentGroupId = nextRows[rowIndex]?.__previewGroupId
 
       if (key === "하심도") {
-        // 현재 행의 하심도가 바뀌면, 동일 시추공을 공유하는 다음 인덱스 행의 상심도를 자동 동기화
-        if (rowIndex + 1 < nextRows.length && nextRows[rowIndex + 1]["시추공명"] === currentBorehole) {
+        if (rowIndex + 1 < nextRows.length && nextRows[rowIndex + 1].__previewGroupId === currentGroupId) {
           nextRows[rowIndex + 1] = {
             ...nextRows[rowIndex + 1],
             "상심도": parsedValue
           }
         }
       } else if (key === "상심도") {
-        // 현재 행의 상심도가 바뀌면, 동일 시추공을 공유하는 이전 인덱스 행의 하심도를 자동 동기화
-        if (rowIndex - 1 >= 0 && nextRows[rowIndex - 1]["시추공명"] === currentBorehole) {
+        if (rowIndex - 1 >= 0 && nextRows[rowIndex - 1].__previewGroupId === currentGroupId) {
           nextRows[rowIndex - 1] = {
             ...nextRows[rowIndex - 1],
             "하심도": parsedValue
@@ -118,11 +129,15 @@ export function PreviewPanel({
       return nextRows
     })
     if (key === "meta_crs") {
-      applyCoordinateConversion(previewBoreholeName(sourceRowForConversion, rowIndex), sourceRowForConversion)
+      const groupId = editedRows[rowIndex]?.__previewGroupId
+      if (groupId) {
+        applyCoordinateConversion(groupId, sourceRowForConversion)
+      }
     }
   }
 
-  const previewRows = editedRows.slice(0, 20)
+  const previewRows = editedRows
+  const saveRows = cleanRows(editedRows)
 
   return (
     <div className="space-y-4 rounded-lg border border-sky-500/30 bg-sky-500/10 p-4">
@@ -136,7 +151,7 @@ export function PreviewPanel({
         <Button
           className="gap-2"
           disabled={saving || editedRows.length === 0}
-          onClick={() => onSave(rowsWithProjectName(editedRows, projectName))}
+          onClick={() => onSave(rowsWithProjectName(saveRows, projectName))}
         >
           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           저장
@@ -198,7 +213,7 @@ export function PreviewPanel({
               const selected = selectedBoreholeName === boreholeName
               return (
                 <tr
-                  key={`${row["시추공명"] ?? "row"}-${index}`}
+                  key={row.__previewRowId}
                   onClick={() => setSelectedBoreholeName(boreholeName)}
                   className={cn(
                     "border-b border-border/60 transition-colors",
@@ -294,9 +309,6 @@ export function PreviewPanel({
           </div>
         )}
       </div>
-      {editedRows.length > previewRows.length && (
-        <p className="text-xs text-sky-100/70">상위 {previewRows.length}개 행만 표시합니다.</p>
-      )}
     </div>
   )
 }

@@ -87,6 +87,8 @@ class PdfService:
             "project_name": project_name,
             "borehole_count": created["borehole_count"],
             "stratum_count": created["stratum_count"],
+            "replaced_borehole_count": created.get("replaced_borehole_count", 0),
+            "quality": assess_extraction_quality(rows),  # [이상 PDF 자동분류]
             "source_file": pdf_path,
         }
 
@@ -116,6 +118,7 @@ class PdfService:
             "source_file": pdf_path,
             "borehole_count": summary["borehole_count"],
             "stratum_count": summary["stratum_count"],
+            "quality": assess_extraction_quality(rows),  # [이상 PDF 자동분류]
             "rows": rows,
         }
 
@@ -164,6 +167,7 @@ class PdfService:
         borehole_count = 0
         created_borehole_count = 0
         linked_borehole_count = 0
+        replaced_borehole_count = 0
         duplicate_count = 0
         stratum_count = 0
         for name, borehole_rows in grouped.items():
@@ -176,47 +180,73 @@ class PdfService:
             _validate_wgs84_coordinates(name, lon, lat)
 
             elevation = _to_float(first.get("표고"))
-            duplicate = _find_duplicate_borehole(db, name=name, lon=lon, lat=lat, elevation=elevation, rows=borehole_rows)
-            if duplicate is not None:
-                borehole = duplicate
-                duplicate_count += 1
+            # [재추출 덮어쓰기/upsert] 같은 source_file + 공명 + 좌표(2m) = 같은 PDF의
+            #   동일 시추공 재추출. 기존 strata를 삭제하고 새 값으로 교체한다.
+            #   이 경로가 없으면, 값이 바뀐(예: 하심도 2540→40) 재추출은 지층
+            #   시그니처가 달라 중복으로 안 잡혀 '오염 공 + 정상 공'이 중복 생성되고
+            #   오염 레코드가 남는다. (source_file 기준이므로 타 보고서의 동일 공
+            #   중복 링크 로직과는 분리된다.)
+            same_src = _find_same_source_borehole(db, source_file=source_file, name=name, lon=lon, lat=lat)
+            if same_src is not None:
+                for stale in list(same_src.strata):
+                    db.delete(stale)
+                same_src.elevation = elevation
+                same_src.source_crs = _to_text(first.get("meta_crs"))
+                borehole = same_src
+                db.flush()
+                borehole_count += 1
+                replaced_borehole_count += 1
                 _ensure_project_link(
                     db,
                     project_id=project_id,
                     borehole_id=borehole.id,
-                    project_role="duplicate_linked",
-                    linked_reason="duplicate_detected",
+                    project_role="new" if is_supplementary else "existing",
+                    linked_reason="reextracted",
                     job_id=job_id,
                 )
-                linked_borehole_count += 1
+            else:
+                duplicate = _find_duplicate_borehole(db, name=name, lon=lon, lat=lat, elevation=elevation, rows=borehole_rows)
+                if duplicate is not None:
+                    borehole = duplicate
+                    duplicate_count += 1
+                    _ensure_project_link(
+                        db,
+                        project_id=project_id,
+                        borehole_id=borehole.id,
+                        project_role="duplicate_linked",
+                        linked_reason="duplicate_detected",
+                        job_id=job_id,
+                    )
+                    linked_borehole_count += 1
+                    borehole_count += 1
+                    stratum_count += len([row for row in borehole_rows if _valid_stratum_row(row)])
+                    continue
+
+                borehole = Borehole(
+                    project_id=project_id,
+                    name=name,
+                    location=WKTElement(f"POINT({lon} {lat})", srid=4326),
+                    elevation=elevation,
+                    source_crs=_to_text(first.get("meta_crs")),
+                    source_file=source_file,
+                    is_supplementary=is_supplementary,
+                    data_origin="user_upload" if "temp_uploads" in str(source_file) else "public",
+                )
+                db.add(borehole)
+                db.flush()
                 borehole_count += 1
-                stratum_count += len([row for row in borehole_rows if _valid_stratum_row(row)])
-                continue
+                created_borehole_count += 1
 
-            borehole = Borehole(
-                project_id=project_id,
-                name=name,
-                location=WKTElement(f"POINT({lon} {lat})", srid=4326),
-                elevation=elevation,
-                source_crs=_to_text(first.get("meta_crs")),
-                source_file=source_file,
-                is_supplementary=is_supplementary,
-                data_origin="user_upload" if "temp_uploads" in str(source_file) else "public",
-            )
-            db.add(borehole)
-            db.flush()
-            borehole_count += 1
-            created_borehole_count += 1
+                _ensure_project_link(
+                    db,
+                    project_id=project_id,
+                    borehole_id=borehole.id,
+                    project_role="new" if is_supplementary else "existing",
+                    linked_reason="pdf_uploaded" if is_supplementary else "migrated",
+                    job_id=job_id,
+                )
 
-            _ensure_project_link(
-                db,
-                project_id=project_id,
-                borehole_id=borehole.id,
-                project_role="new" if is_supplementary else "existing",
-                linked_reason="pdf_uploaded" if is_supplementary else "migrated",
-                job_id=job_id,
-            )
-
+            # 공통 strata 삽입 (신규 생성 · 재추출 덮어쓰기 공용)
             for row in sorted(borehole_rows, key=lambda r: _to_float(r.get("상심도")) or 0.0):
                 depth_top = _to_float(row.get("상심도"))
                 depth_bottom = _to_float(row.get("하심도"))
@@ -243,6 +273,7 @@ class PdfService:
             "borehole_count": borehole_count,
             "created_borehole_count": created_borehole_count,
             "linked_borehole_count": linked_borehole_count,
+            "replaced_borehole_count": replaced_borehole_count,
             "duplicate_count": duplicate_count,
             "stratum_count": stratum_count,
         }
@@ -524,6 +555,111 @@ def _ensure_project_link(
     if link.registered_from_job_id is None:
         link.registered_from_job_id = job_id
     return link
+
+
+# 자동 생성/미인식 시추공명 패턴 (예: pdf_parser_odl 폴백 "시추-3", 빈값, UNKNOWN)
+_AUTO_NAME_RE = re.compile(r"^\s*시추-\d+\s*$")
+
+
+def assess_extraction_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """추출 결과의 신뢰도를 자동 판정해 '전면실패/이상 PDF'를 분류한다.
+
+    page116류(표 인식 실패) 사례의 특징:
+      · 시추공명이 전부 "시추-N"(자동생성) 또는 빈값/UNKNOWN → ID 추출 실패
+      · 모든 공이 동일한 큰 심도값(예 500m) → 표 구조 오인식
+      · 이상심도(하심도>100m 또는 단일층 두께>50m) 비율이 높음
+    하나라도 임계 초과 시 is_anomalous=True 로 표시하고 사유를 남긴다.
+    (스키마 변경 없이 job.result 안에 실려 검토 UI에서 경고로 노출 가능)
+    """
+    from collections import defaultdict, Counter
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        name = str(r.get("시추공명") or "").strip()
+        grouped[name].append(r)
+
+    n_bh = len(grouped)
+    if n_bh == 0:
+        return {"is_anomalous": True, "reasons": ["추출된 시추공이 없음"], "stats": {}}
+
+    auto_named = sum(
+        1 for name in grouped
+        if (not name) or _AUTO_NAME_RE.match(name) or name.upper() in ("UNKNOWN", "N/A")
+    )
+    auto_ratio = auto_named / n_bh
+
+    n_str = n_anom = 0
+    max_depths: list[float] = []
+    for rs in grouped.values():
+        bottoms = [b for b in (_to_float(r.get("하심도")) for r in rs) if b is not None]
+        if bottoms:
+            max_depths.append(max(bottoms))
+        for r in rs:
+            t, b = _to_float(r.get("상심도")), _to_float(r.get("하심도"))
+            if t is None or b is None:
+                continue
+            n_str += 1
+            if b > 100 or (b - t) > 50:
+                n_anom += 1
+    anom_ratio = (n_anom / n_str) if n_str else 1.0
+
+    uniform_val = None
+    if len(max_depths) >= 3:
+        val, cnt = Counter(round(d, 1) for d in max_depths).most_common(1)[0]
+        if val > 100 and cnt / len(max_depths) >= 0.6:
+            uniform_val = val
+
+    reasons: list[str] = []
+    if auto_ratio >= 0.5:
+        reasons.append(f"시추공명 미인식 {auto_named}/{n_bh} ({auto_ratio:.0%})")
+    if anom_ratio >= 0.3:
+        reasons.append(f"이상심도 비율 {n_anom}/{n_str} ({anom_ratio:.0%})")
+    if uniform_val is not None:
+        reasons.append(f"동일 심도값({uniform_val}m)이 과반 — 표 인식 실패 의심")
+
+    return {
+        "is_anomalous": bool(reasons),
+        "reasons": reasons,
+        "stats": {
+            "boreholes": n_bh,
+            "auto_named": auto_named,
+            "strata": n_str,
+            "depth_anomalies": n_anom,
+        },
+    }
+
+
+def _find_same_source_borehole(
+    db: Session,
+    *,
+    source_file: str,
+    name: str,
+    lon: float,
+    lat: float,
+) -> Borehole | None:
+    """같은 source_file + 같은 공명 + 좌표 근접(2m) = 같은 PDF의 동일 시추공.
+
+    재추출 시 기존 strata를 교체(덮어쓰기)하기 위한 매칭이다. _find_duplicate_borehole
+    과 달리 '지층 시그니처'를 보지 않으므로, 값이 바뀐 재추출(예: 하심도 2540→40)도
+    동일 공으로 인식되어 오염값이 정정값으로 안전하게 교체된다.
+    """
+    point = func.ST_GeogFromText(f"SRID=4326;POINT({lon} {lat})")
+    candidates = db.execute(
+        select(Borehole)
+        .options(selectinload(Borehole.strata))
+        .where(
+            Borehole.deleted_at.is_(None),
+            Borehole.source_file == source_file,
+            func.ST_DWithin(Borehole.location, point, 2.0),
+        )
+        .limit(50)
+    ).scalars().all()
+
+    target_name = _dedupe_name(name)
+    for candidate in candidates:
+        if _dedupe_name(candidate.name) == target_name:
+            return candidate
+    return None
 
 
 def _find_duplicate_borehole(

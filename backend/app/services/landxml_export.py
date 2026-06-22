@@ -7,8 +7,10 @@
 # =============================================================================
 
 from datetime import date, datetime
-import math, sys, logging
-logging.getLogger(__name__).warning(f"[LANDXML] 로드된 파일: {__file__}")
+import math, logging
+from xml.sax.saxutils import quoteattr
+
+logging.getLogger(__name__).debug("[LANDXML] loaded file: %s", __file__)
 
 LAYER_LABELS: dict[str, str] = {
     "ground_surface": "지표면",
@@ -81,6 +83,51 @@ def _wgs84_to_tm(lng_deg: float, lat_deg: float) -> tuple[float, float]:
     return easting, northing
 
 
+def _validate_bbox(bbox: list[float]) -> tuple[float, float, float, float]:
+    if len(bbox) != 4:
+        raise ValueError("bbox는 [min_lng, min_lat, max_lng, max_lat] 형식이어야 합니다.")
+
+    min_lng, min_lat, max_lng, max_lat = [float(v) for v in bbox]
+    if not all(math.isfinite(v) for v in [min_lng, min_lat, max_lng, max_lat]):
+        raise ValueError("bbox 값은 모두 유한한 숫자여야 합니다.")
+    if min_lng >= max_lng or min_lat >= max_lat:
+        raise ValueError("bbox의 최소 좌표는 최대 좌표보다 작아야 합니다.")
+    return min_lng, min_lat, max_lng, max_lat
+
+
+def _validated_grid(layer_name: str, grid: list[list[float]]) -> list[list[float]]:
+    if not grid:
+        raise ValueError(f"{layer_name} 격자 데이터가 비어 있습니다.")
+
+    res = len(grid)
+    if res < 2:
+        raise ValueError(f"{layer_name} 격자는 최소 2x2 이상이어야 합니다.")
+
+    validated: list[list[float]] = []
+    for row_index, row in enumerate(grid):
+        if not isinstance(row, list):
+            raise ValueError(f"{layer_name} 격자 행은 리스트여야 합니다: row={row_index}")
+        if len(row) != res:
+            raise ValueError(f"{layer_name} 격자는 정방형이어야 합니다.")
+
+        validated_row: list[float] = []
+        for col_index, value in enumerate(row):
+            try:
+                elev = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{layer_name} 격자에 숫자가 아닌 표고가 있습니다: row={row_index}, col={col_index}"
+                ) from exc
+            if not math.isfinite(elev):
+                raise ValueError(
+                    f"{layer_name} 격자에 유효하지 않은 표고가 있습니다: row={row_index}, col={col_index}"
+                )
+            validated_row.append(elev)
+        validated.append(validated_row)
+
+    return validated
+
+
 def grid_to_landxml(
     bbox: list[float],
     grids: dict[str, list[list[float]]],
@@ -91,23 +138,35 @@ def grid_to_landxml(
     date_str = date_str or date.today().isoformat()
     time_str = time_str or datetime.now().strftime("%H:%M:%S")
 
-    min_lng, min_lat, max_lng, max_lat = bbox
+    min_lng, min_lat, max_lng, max_lat = _validate_bbox(bbox)
 
-    first_grid = next((grids[k] for k in layers if k in grids), None)
-    if first_grid is None:
+    selected_layers = [layer for layer in layers if layer in grids]
+    if not selected_layers:
         raise ValueError("내보낼 수 있는 지층 데이터가 없습니다.")
 
-    res = len(first_grid)
+    validated_grids: dict[str, list[list[float]]] = {}
+    first_res: int | None = None
+    for layer_name in selected_layers:
+        grid = _validated_grid(layer_name, grids[layer_name])
+        res = len(grid)
+        if first_res is None:
+            first_res = res
+        elif res != first_res:
+            raise ValueError("선택된 모든 지층 격자는 같은 해상도여야 합니다.")
+        validated_grids[layer_name] = grid
+
+    res = first_res
+    if res is None:
+        raise ValueError("내보낼 수 있는 지층 데이터가 없습니다.")
+
     lngs = [min_lng + (max_lng - min_lng) * i / (res - 1) for i in range(res)]
     lats = [min_lat + (max_lat - min_lat) * j / (res - 1) for j in range(res)]
 
     surfaces_xml_parts: list[str] = []
-    for layer_name in layers:
-        if layer_name not in grids:
-            continue
+    for layer_name in selected_layers:
         label = LAYER_LABELS.get(layer_name, layer_name)
         surfaces_xml_parts.append(
-            _surface_xml(label, lngs, lats, grids[layer_name], res)
+            _surface_xml(label, lngs, lats, validated_grids[layer_name], res)
         )
 
     surfaces_block = "\n".join(surfaces_xml_parts)
@@ -167,7 +226,7 @@ def _surface_xml(
     faces_block = "\n".join(face_lines)
 
     return (
-        f'    <Surface name="{name}">\n'
+        f'    <Surface name={quoteattr(name)}>\n'
         '      <Definition surfType="TIN">\n'
         "        <Pnts>\n"
         f"{pnts_block}\n"

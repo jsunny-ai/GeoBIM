@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import uuid
@@ -21,6 +22,8 @@ from app.services.pdf_service import PdfService
 from app.workers.pdf_tasks import auto_extract_task
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
 
 def _run_extraction_background(job_id: int) -> None:
     """BackgroundTasks용 동기 PDF 추출 실행기.
@@ -50,6 +53,13 @@ def _run_extraction_background(job_id: int) -> None:
             job.project_id = result["project_id"]
             job.result = result
             job.status = ExtractionJobStatus.AWAITING_REVIEW
+            # [이상 PDF 자동분류] 전면실패 의심 시 경고 로그 + 결과에 플래그(검토 UI 노출용)
+            quality = (result or {}).get("quality") or {}
+            if quality.get("is_anomalous"):
+                logger.warning(
+                    "[추출품질] 이상 PDF 의심: %s | 사유: %s",
+                    job.file_path, "; ".join(quality.get("reasons", [])),
+                )
             db.commit()
         except Exception as exc:
             try:

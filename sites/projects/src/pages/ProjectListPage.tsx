@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Building2, FileText, Layers, Map, MapPin, Plus, Trash2 } from "lucide-react"
+import { Building2, FileText, Layers, Map, MapPin, Pencil, Plus, Trash2 } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import Navbar from "@/components/Navbar"
@@ -20,18 +20,29 @@ function ProjectBoreholeCount({ project }: { project: Project }) {
 
 function ProjectCard({
   project,
+  onEdit,
   onDelete,
 }: {
   project: Project
+  onEdit: (e: React.MouseEvent, project: Project) => void
   onDelete: (e: React.MouseEvent, id: number, name: string) => void
 }) {
   return (
     <Card className="flex flex-col h-full border-border/60 hover:border-border transition-colors hover:shadow-md bg-card">
       <CardHeader className="pb-3 flex-1">
-        <div className="flex justify-between items-start gap-2">
-          <CardTitle className="text-sm font-medium leading-snug line-clamp-2">
+        <div className="flex items-start gap-2">
+          <CardTitle className="min-w-0 flex-1 text-sm font-medium leading-snug line-clamp-2">
             {project.name}
           </CardTitle>
+          <div className="flex shrink-0 items-center gap-1">
+          <button
+            onClick={(e) => onEdit(e, project)}
+            type="button"
+            className="text-muted-foreground hover:text-foreground transition-colors p-1 relative z-10"
+            title="프로젝트 이름 변경"
+          >
+            <Pencil className="h-4 w-4 pointer-events-none" />
+          </button>
           <button
             onClick={(e) => onDelete(e, project.id, project.name)}
             type="button"
@@ -40,6 +51,7 @@ function ProjectCard({
           >
             <Trash2 className="h-4 w-4 pointer-events-none" />
           </button>
+          </div>
         </div>
         {project.description && (
           <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
@@ -98,6 +110,10 @@ export default function ProjectListPage() {
   const [newProjectName, setNewProjectName] = useState("")
   const [newProjectDesc, setNewProjectDesc] = useState("")
   const [createLoading, setCreateLoading] = useState(false)
+  const [editingProject, setEditingProject] = useState<Project | null>(null)
+  const [editProjectName, setEditProjectName] = useState("")
+  const [editProjectDesc, setEditProjectDesc] = useState("")
+  const [editLoading, setEditLoading] = useState(false)
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -152,6 +168,48 @@ export default function ProjectListPage() {
     }
   }
 
+  const handleOpenEdit = (e: React.MouseEvent, project: Project) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setEditingProject(project)
+    setEditProjectName(project.name)
+    setEditProjectDesc(project.description ?? "")
+  }
+
+  const handleCloseEdit = () => {
+    setEditingProject(null)
+    setEditProjectName("")
+    setEditProjectDesc("")
+  }
+
+  const handleUpdateProject = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingProject) return
+    if (!editProjectName.trim()) {
+      alert("프로젝트 이름을 입력해주세요.")
+      return
+    }
+
+    setEditLoading(true)
+    try {
+      await api.put(`/projects/${editingProject.id}`, {
+        name: editProjectName.trim(),
+        description: editProjectDesc.trim(),
+        region: editingProject.region,
+        source_crs: editingProject.source_crs,
+        bbox: editingProject.bbox ?? null,
+      })
+      alert("프로젝트 이름이 변경되었습니다.")
+      handleCloseEdit()
+      queryClient.invalidateQueries({ queryKey: ["projects"] })
+      queryClient.invalidateQueries({ queryKey: ["project", editingProject.id] })
+    } catch (err: any) {
+      alert("수정 중 오류가 발생했습니다: " + (err.response?.data?.detail || err.message))
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
   return (
     <div className="flex flex-col h-screen bg-background text-foreground">
       <Navbar active="projects" />
@@ -175,7 +233,12 @@ export default function ProjectListPage() {
         {projects && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {projects.map((project) => (
-              <ProjectCard key={project.id} project={project} onDelete={handleDelete} />
+              <ProjectCard
+                key={project.id}
+                project={project}
+                onEdit={handleOpenEdit}
+                onDelete={handleDelete}
+              />
             ))}
           </div>
         )}
@@ -232,6 +295,58 @@ export default function ProjectListPage() {
                   className="inline-flex items-center justify-center rounded-md text-xs font-semibold bg-stone-300 hover:bg-stone-400 text-stone-800 h-9 px-4 py-2 transition-colors disabled:opacity-50"
                 >
                   {createLoading ? "생성 중..." : "프로젝트 생성"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingProject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-card border border-border rounded-xl max-w-md w-full p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <h3 className="text-base font-semibold text-foreground mb-4">프로젝트 이름 변경</h3>
+
+            <form onSubmit={handleUpdateProject} className="space-y-4">
+              <div>
+                <label className="block text-xs text-muted-foreground font-medium mb-1.5">
+                  프로젝트 이름 <span className="text-destructive">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editProjectName}
+                  onChange={(e) => setEditProjectName(e.target.value)}
+                  className="w-full h-9 rounded-md border border-input bg-background/50 px-3 py-1 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-muted-foreground font-medium mb-1.5">
+                  설명
+                </label>
+                <textarea
+                  value={editProjectDesc}
+                  onChange={(e) => setEditProjectDesc(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-md border border-input bg-background/50 px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={handleCloseEdit}
+                  className="inline-flex items-center justify-center rounded-md text-xs font-semibold border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2 transition-colors"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  disabled={editLoading}
+                  className="inline-flex items-center justify-center rounded-md text-xs font-semibold bg-stone-300 hover:bg-stone-400 text-stone-800 h-9 px-4 py-2 transition-colors disabled:opacity-50"
+                >
+                  {editLoading ? "저장 중..." : "저장"}
                 </button>
               </div>
             </form>

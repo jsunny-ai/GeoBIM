@@ -195,6 +195,115 @@ function snapGridToPoints(
   )
 }
 
+function clampLayerBoundaries(
+  elevGrid: number[][],
+  bottomGrids: Record<StrataKey, number[][]>,
+  yBotM: number,
+) {
+  const rows = elevGrid.length
+  const cols = elevGrid[0]?.length ?? 0
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      let upper = elevGrid[j][i]
+      for (const key of STRATA_KEYS) {
+        const clamped = Math.max(yBotM, Math.min(bottomGrids[key][j][i], upper))
+        bottomGrids[key][j][i] = clamped
+        upper = clamped
+      }
+    }
+  }
+}
+
+function buildBoundaryTargets(
+  profiles: Array<{
+    x: number
+    y: number
+    elev: number
+    thick: Record<StrataKey, number>
+    deepestRank: number
+  }>,
+  elevGrid: number[][],
+  gx: number[],
+  gy: number[],
+) {
+  const targets: Record<StrataKey, GridPoint[]> = {
+    soil: [], weathered_rock: [], soft_rock: [], normal_rock: [], hard_rock: [],
+  }
+
+  for (const p of profiles) {
+    // [기둥↔솔리드 정합] 기둥(useGeoModel)이 지층을 (보간 지표면 surfElev − 실측심도)에
+    // 놓으므로, 경계 스냅 타깃도 동일하게 '보간 지표면'을 기준으로 한다. 원공 표고
+    // (p.elev) 대신 시추공 위치의 elevGrid 쌍선형 샘플을 써야 솔리드 상부면이 기둥의
+    // 지층 높이와 정확히 일치한다(표면 스냅에서 제외된 시추공에서도 자동 정합).
+    const surfElev = sampleGridBilinear(elevGrid, gx, gy, p.x, p.y)
+    let cumulativeDepth = 0
+    for (let k = 0; k < STRATA_KEYS.length; k++) {
+      const key = STRATA_KEYS[k]
+      cumulativeDepth += p.thick[key] || 0
+      if (k <= p.deepestRank) {
+        targets[key].push({ x: p.x, y: p.y, z: surfElev - cumulativeDepth })
+      }
+    }
+  }
+  return targets
+}
+
+function snapBoundariesToBoreholes(
+  bottomGrids: Record<StrataKey, number[][]>,
+  elevGrid: number[][],
+  gx: number[],
+  gy: number[],
+  boundaryTargets: Record<StrataKey, GridPoint[]>,
+  radiusM: number,
+  yBotM: number,
+) {
+  for (const key of STRATA_KEYS) {
+    const targets = boundaryTargets[key]
+    if (targets.length === 0) continue
+    const snapped = snapGridToPoints(bottomGrids[key], gx, gy, targets, radiusM)
+    for (let j = 0; j < bottomGrids[key].length; j++) {
+      for (let i = 0; i < bottomGrids[key][j].length; i++) {
+        bottomGrids[key][j][i] = snapped[j][i]
+      }
+    }
+  }
+  clampLayerBoundaries(elevGrid, bottomGrids, yBotM)
+  return bottomGrids
+}
+
+function boundarySnapDiagnostics(
+  bottomGrids: Record<StrataKey, number[][]>,
+  gx: number[],
+  gy: number[],
+  boundaryTargets: Record<StrataKey, GridPoint[]>,
+) {
+  let count = 0
+  let maxAbsError = 0
+  let sumAbsError = 0
+  let maxLayer = -1
+
+  for (let k = 0; k < STRATA_KEYS.length; k++) {
+    const key = STRATA_KEYS[k]
+    for (const target of boundaryTargets[key]) {
+      const sampled = sampleGridBilinear(bottomGrids[key], gx, gy, target.x, target.y)
+      const absError = Math.abs(sampled - target.z)
+      count++
+      sumAbsError += absError
+      if (absError > maxAbsError) {
+        maxAbsError = absError
+        maxLayer = k
+      }
+    }
+  }
+
+  return {
+    count,
+    maxAbsError: Math.round(maxAbsError * 1000) / 1000,
+    meanAbsError: count > 0 ? Math.round((sumAbsError / count) * 1000) / 1000 : 0,
+    maxLayer,
+  }
+}
+
 self.onmessage = async (e: MessageEvent) => {
   const { boreholes, bbox, N, depthBelowMSL, mScale, boxW, boxD } = e.data as {
     boreholes: any[]
@@ -608,6 +717,99 @@ self.onmessage = async (e: MessageEvent) => {
     // ── 5. 스무드 모드: 수밀 솔리드 지층 메쉬 빌드 ────────────────────────
     // 두께 0 영역은 top==bottom 퇴화 → buildLayerSolidGeometryData가
     // 두께 임계(0.001m) 미만 셀의 인덱스를 생략하므로 렌즈 가장자리가 자연 소멸
+    const observedBottomGrids: Record<StrataKey, number[][]> = {
+      soil: soilBottomGrid,
+      weathered_rock: weatheredBottomGrid,
+      soft_rock: softBottomGrid,
+      normal_rock: normalBottomGrid,
+      hard_rock: hardBottomGrid,
+    }
+    const boundaryTargets = buildBoundaryTargets(okProfiles, elevGrid, gx, gy)
+    const boundarySnapRadiusM = Math.max(60, Math.min(avgSpacing * 1.2, confRadiusM))
+    snapBoundariesToBoreholes(
+      observedBottomGrids,
+      elevGrid,
+      gx,
+      gy,
+      boundaryTargets,
+      boundarySnapRadiusM,
+      yBotM,
+    )
+
+    for (let j = 0; j < NX; j++) {
+      for (let i = 0; i < NX; i++) {
+        boreholeBottomGrid[j][i] = hardBottomGrid[j][i]
+        rawGGrid[j][i] = boreholeBottomGrid[j][i] - yBotM
+
+        const observed = [
+          soilBottomGrid[j][i],
+          weatheredBottomGrid[j][i],
+          softBottomGrid[j][i],
+          normalBottomGrid[j][i],
+          hardBottomGrid[j][i],
+        ]
+        soilBottomExt[j][i] = 0 < bgRank ? observed[0] : yBotM
+        weatheredBottomExt[j][i] = 1 < bgRank ? observed[1] : yBotM
+        softBottomExt[j][i] = 2 < bgRank ? observed[2] : yBotM
+        normalBottomExt[j][i] = 3 < bgRank ? observed[3] : yBotM
+        hardBottomExt[j][i] = 4 < bgRank ? observed[4] : yBotM
+      }
+    }
+
+    label.fill(0)
+    labelExt.fill(0)
+    diagBottomFill.fill(0)
+
+    for (let j = 0; j < NX; j++) {
+      for (let i = 0; i < NX; i++) {
+        const surfElev = elevGrid[j][i]
+        const soilB = soilBottomGrid[j][i]
+        const weatheredB = weatheredBottomGrid[j][i]
+        const softB = softBottomGrid[j][i]
+        const normalB = normalBottomGrid[j][i]
+        const hardB = hardBottomGrid[j][i]
+        const bExt = [
+          soilBottomExt[j][i],
+          weatheredBottomExt[j][i],
+          softBottomExt[j][i],
+          normalBottomExt[j][i],
+          hardBottomExt[j][i],
+        ]
+
+        let deepTau = 0
+        let prevB = surfElev
+        for (let k = 0; k < 5; k++) {
+          if (prevB - bExt[k] > 1e-9) deepTau = k
+          prevB = bExt[k]
+        }
+        diagBottomFill[deepTau]++
+
+        for (let l = 0; l < MZ; l++) {
+          const elev = yBotM + dz * l
+          const index = idx3(i, j, l)
+          if      (elev > surfElev)   label[index] = 0
+          else if (elev > soilB)      label[index] = 1
+          else if (elev > weatheredB) label[index] = 2
+          else if (elev > softB)      label[index] = 3
+          else if (elev > normalB)    label[index] = 4
+          else if (elev > hardB)      label[index] = 5
+          else                        label[index] = 6
+
+          if (elev > surfElev) {
+            labelExt[index] = 0
+          } else {
+            let codeE = deepTau + 1
+            for (let k = 0; k < 5; k++) {
+              if (elev > bExt[k]) { codeE = k + 1; break }
+            }
+            labelExt[index] = codeE
+          }
+        }
+      }
+    }
+
+    const boundarySnapDiag = boundarySnapDiagnostics(observedBottomGrids, gx, gy, boundaryTargets)
+
     ;(self as any).postMessage({ type: "progress", step: "수밀 지층 메쉬 생성 중..." })
     const smoothMeshData: Record<string, { positions: Float32Array; indices: Uint32Array }> = {}
 
@@ -731,6 +933,7 @@ self.onmessage = async (e: MessageEvent) => {
       bottomFill: diagBottomFill,            // 모델 바닥 점유 지층 분포(셀 수)
       maxSlope: Math.round(diagMaxSlope * 10) / 10,
       maxSlopeLayer: diagMaxSlopeLayer,      // 0=soil..4=hard
+      boundarySnap: boundarySnapDiag,
     }
     try { console.warn("[geoWorker diag]", JSON.stringify(diag)) } catch {}
 

@@ -277,7 +277,7 @@ export default function ExportPanel({
         <div style={{ fontWeight: 600, color: C.secondary, marginBottom: 4 }}>출력 형식</div>
         <div>· LandXML 1.2 (Civil 3D 호환)</div>
         <div>· TIN Surface — 각 지층 경계면 분리</div>
-        <div>· 좌표계: GRS80 / WGS84 (EPSG:4326)</div>
+        <div>· 좌표계: Korea 2000 Central Belt 2010 (EPSG:5186, meter)</div>
         <div>· 파일명: geobim_stratum_YYYYMMDD.xml</div>
       </div>
 

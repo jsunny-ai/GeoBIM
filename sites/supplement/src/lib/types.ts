@@ -1,5 +1,3 @@
-// 3단계(supplement) 전용 타입 정의
-
 export interface Stratum {
   id?: number
   order: number
@@ -17,10 +15,12 @@ export interface Borehole {
   latitude: number
   elevation: number | null
   strata: Stratum[]
-  isNew?: boolean   // 신규 추가 시추공 플래그
+  is_supplementary?: boolean
+  data_status?: string
+  project_role?: "existing" | "new" | "duplicate_linked" | "excluded" | string | null
+  isNew?: boolean
 }
 
-// RBF 보간 결과 그리드
 export interface RBFGrids {
   soil: number[][]
   weathered_rock: number[][]
@@ -30,7 +30,6 @@ export interface RBFGrids {
   [key: string]: number[][]
 }
 
-// LandXML 내보내기 옵션
 export type InterpolationMode = "merge" | "new_only"
 
 export interface ExportOptions {
@@ -39,7 +38,6 @@ export interface ExportOptions {
   gridRes: number
 }
 
-// URL 파라미터
 export interface ParsedParams {
   bbox: [number, number, number, number] | null
   polygon: { lng: number; lat: number }[] | null

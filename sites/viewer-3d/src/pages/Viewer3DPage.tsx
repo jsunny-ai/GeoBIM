@@ -3,13 +3,14 @@ import { BoreholeTable } from "../components/BoreholeTable"
 import { BoreholeEditPanel } from "../components/BoreholeEditPanel"
 import { DepthWarningModal } from "../components/DepthWarningModal"
 import { PdfComparePanel } from "../components/PdfComparePanel"
+import { DataExportModal } from "../components/DataExportModal"
 import { ViewerControls, type Basemap } from "../components/ViewerControls"
 import { useBoreholeData } from "../hooks/useBoreholeData"
 import { useGeoModel, type GeoModelSettings } from "../hooks/useGeoModel"
 import { useThreeScene } from "../hooks/useThreeScene"
 import { parseUrlParams } from "@/lib/parseUrl"
 import type { Borehole } from "@/lib/types"
-import { MAP_URL } from "@shared/urls"
+import { MAP_URL, apiUrl } from "@shared/urls"
 
 const C = {
   bg: "#faf8f5",
@@ -39,6 +40,8 @@ const hint: React.CSSProperties = {
   position: "absolute",
   top: 14,
   right: 14,
+  width: 260,
+  boxSizing: "border-box",
   background: "rgba(250,248,245,.88)",
   padding: "9px 12px",
   borderRadius: 6,
@@ -85,6 +88,7 @@ export default function Viewer3DPage() {
   const [reloadKey, setReloadKey] = useState(0)
   const [compareBh, setCompareBh] = useState<(Borehole & { dem_elevation?: number }) | null>(null)
   const [editingBh, setEditingBh] = useState<(Borehole & { dem_elevation?: number }) | null>(null)
+  const [isExportOpen, setIsExportOpen] = useState(false)
   const [depthModalDismissed, setDepthModalDismissed] = useState(false)
   const [visibility, setVisibility] = useState<Record<string, boolean>>({
     soil: true,
@@ -114,7 +118,7 @@ export default function Viewer3DPage() {
       setIsLoadingProject(true)
       ;(async () => {
         try {
-          const res = await fetch(`/api/v1/projects/${projId}`)
+          const res = await fetch(apiUrl(`/api/v1/projects/${projId}`))
           if (!res.ok) throw new Error("프로젝트를 불러오지 못했습니다.")
           const proj = await res.json()
           if (proj.bbox && typeof proj.bbox === "object") {
@@ -166,7 +170,7 @@ export default function Viewer3DPage() {
 
   const handleUpdateElevation = async (bhId: string, newElev: number) => {
     const target = bhState.find((b) => String(b.id) === String(bhId))
-    const response = await fetch(`/api/v1/boreholes/${bhId}/revisions`, {
+    const response = await fetch(apiUrl(`/api/v1/boreholes/${bhId}/revisions`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -265,6 +269,7 @@ export default function Viewer3DPage() {
               setShowColumns={setShowColumns}
               basementMode={basementMode}
               setBasementMode={setBasementMode}
+              onOpenExport={() => setIsExportOpen(true)}
             />
 
             <div style={hint}>
@@ -278,8 +283,11 @@ export default function Viewer3DPage() {
               top: 84,
               right: 14,
               zIndex: 10,
-              display: "flex",
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
               gap: 4,
+              width: 260,
+              boxSizing: "border-box",
               padding: 4,
               borderRadius: 6,
               border: `1px solid ${C.border}`,
@@ -302,8 +310,9 @@ export default function Viewer3DPage() {
                     }}
                     title={`${modelSourceLabels[mode]} 데이터만으로 지층 형상 생성`}
                     style={{
-                      minWidth: 58,
-                      padding: "5px 8px",
+                      width: "100%",
+                      minWidth: 0,
+                      padding: "5px 4px",
                       borderRadius: 4,
                       border: `1px solid ${active ? "#a8a29e" : "transparent"}`,
                       background: active ? "rgba(168,162,158,.28)" : "transparent",
@@ -312,6 +321,8 @@ export default function Viewer3DPage() {
                       fontSize: 11,
                       fontWeight: active ? 700 : 500,
                       fontFamily: "'Noto Sans KR',sans-serif",
+                      textAlign: "center",
+                      whiteSpace: "nowrap",
                     }}
                   >
                     {modelSourceLabels[mode]} {count}
@@ -396,6 +407,16 @@ export default function Viewer3DPage() {
             setCompareBh(null)
             setReloadKey((k) => k + 1) // 재조회 → 워커 자동 재계산 → 경고 재평가
           }}
+        />
+      )}
+      {!showLoadingOverlay && !showErrorOverlay && isExportOpen && bbox && (
+        <DataExportModal
+          bbox={bbox}
+          projectId={projectId}
+          boreholes={bhState}
+          initialScope={modelSourceMode}
+          basementMode={basementMode}
+          onClose={() => setIsExportOpen(false)}
         />
       )}
     </div>

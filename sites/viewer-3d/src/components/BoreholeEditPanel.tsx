@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react"
 import type { Borehole } from "@/lib/types"
+import { apiUrl } from "@shared/urls"
 
 const C = {
   panel: "rgba(250,248,245,.99)",
@@ -134,7 +135,7 @@ export const BoreholeEditPanel: React.FC<Props> = ({ borehole, onClose, onPrevie
     setError(null)
     try {
       if (lat !== borehole.latitude || lng !== borehole.longitude) {
-        const coordRes = await fetch(`/api/v1/boreholes/${borehole.id}`, {
+        const coordRes = await fetch(apiUrl(`/api/v1/boreholes/${borehole.id}`), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ latitude: lat, longitude: lng }),
@@ -142,7 +143,7 @@ export const BoreholeEditPanel: React.FC<Props> = ({ borehole, onClose, onPrevie
         if (!coordRes.ok) throw new Error(await readApiError(coordRes))
       }
 
-      const revisionRes = await fetch(`/api/v1/boreholes/${borehole.id}/revisions`, {
+      const revisionRes = await fetch(apiUrl(`/api/v1/boreholes/${borehole.id}/revisions`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ elevation: elev, strata: normalized, reason: reason.trim() }),

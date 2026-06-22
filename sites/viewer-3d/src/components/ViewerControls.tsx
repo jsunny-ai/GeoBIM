@@ -1,5 +1,5 @@
 import React from "react"
-import { MAP_URL, SUPPLEMENT_URL } from "@shared/urls"
+import { MAP_URL } from "@shared/urls"
 
 export type Basemap = "Satellite" | "Hybrid" | "Base"
 
@@ -56,7 +56,7 @@ const segActive: React.CSSProperties = {
   flex: 1,
   ...btnBase,
   background: C.btnActive,
-  color: "#1c1917",
+  color: C.text,
   border: `1px solid ${C.btnBorder}`,
   fontWeight: 600,
 }
@@ -104,6 +104,7 @@ interface ViewerControlsProps {
   setShowColumns: React.Dispatch<React.SetStateAction<boolean>>
   basementMode: "extend" | "unknown"
   setBasementMode: (mode: "extend" | "unknown") => void
+  onOpenExport: () => void
 }
 
 export const ViewerControls: React.FC<ViewerControlsProps> = ({
@@ -123,13 +124,14 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
   setShowColumns,
   basementMode,
   setBasementMode,
+  onOpenExport,
 }) => {
   return (
     <div style={panelStyle}>
       <div style={{ fontSize: 12, color: C.tertiary }}>KH Geo · 2단계</div>
       <h1 style={{ margin: "2px 0 4px 0", fontSize: 16, fontWeight: 700 }}>3D 지질 뷰어</h1>
       <div style={{ fontSize: 11, color: C.tertiary, marginBottom: 10 }}>
-        초정밀 Three.js 지하 기하학 렌더러
+        Three.js 기반 지층 형상 뷰어
       </div>
 
       <button
@@ -150,21 +152,18 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
           marginBottom: 6,
         }}
       >
-        ← 1단계 지도로 복귀
+        1단계 지도로 돌아가기
       </button>
 
       <button
-        onClick={() => {
-          const params = new URLSearchParams(window.location.search)
-          window.open(`${SUPPLEMENT_URL}/?${params.toString()}`, "_blank")
-        }}
+        onClick={onOpenExport}
         style={{
           width: "100%",
           padding: "7px 0",
           borderRadius: 6,
           background: "rgba(160,155,148,.15)",
           border: "1px solid #BEBAB3",
-          color: "#1c1917",
+          color: C.text,
           fontSize: 12,
           fontWeight: 700,
           cursor: "pointer",
@@ -172,7 +171,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
           marginBottom: 12,
         }}
       >
-        3단계 데이터 보완 · 내보내기 →
+        데이터 내보내기
       </button>
 
       <div
@@ -200,49 +199,29 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
             flexShrink: 0,
           }}
         />
-        윗면 지도 표시 오버랩
-        <span style={{ marginLeft: "auto", fontSize: 10, color: C.tertiary }}>{showDrape ? "켜짐" : "꺼짐"}</span>
+        표면 지도 표시
+        <span style={{ marginLeft: "auto", fontSize: 10, color: C.tertiary }}>{showDrape ? "켬" : "끔"}</span>
       </div>
       <select value={basemap} onChange={(e) => setBasemap(e.target.value as Basemap)} style={selectStyle} disabled={!showDrape}>
         <option value="Base">일반지도 (VWorld)</option>
-        <option value="Satellite">항공사진 (위성)</option>
-        <option value="Hybrid">위성 + 라벨</option>
+        <option value="Satellite">항공사진</option>
+        <option value="Hybrid">항공사진 + 라벨</option>
       </select>
 
       <div style={{ marginTop: 12 }}>
         <div style={{ fontSize: 12, marginBottom: 4 }}>렌더 방식</div>
         <div style={{ display: "flex", gap: 4 }}>
-          <button
-            onClick={() => setRenderMode("smooth")}
-            style={{
-              ...(renderMode === "smooth" ? segActive : segIdle),
-              lineHeight: "1.2",
-              padding: "4px 2px",
-              fontSize: 11,
-              flex: 1,
-            }}
-          >
-            마칭큐브
-            <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(매끄러움)</span>
+          <button onClick={() => setRenderMode("smooth")} style={renderMode === "smooth" ? segActive : segIdle}>
+            매끄러운 면
           </button>
-          <button
-            onClick={() => setRenderMode("voxel")}
-            style={{
-              ...(renderMode === "voxel" ? segActive : segIdle),
-              lineHeight: "1.2",
-              padding: "4px 2px",
-              fontSize: 11,
-              flex: 1,
-            }}
-          >
+          <button onClick={() => setRenderMode("voxel")} style={renderMode === "voxel" ? segActive : segIdle}>
             복셀
-            <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(RLE 격자)</span>
           </button>
         </div>
       </div>
 
       <div style={{ marginTop: 12 }}>
-        <div style={{ fontSize: 12, marginBottom: 4 }}>수직 과장 배율: {verticalExag}배 (1배 ~ 20배)</div>
+        <div style={{ fontSize: 12, marginBottom: 4 }}>수직 과장 배율: {verticalExag}배</div>
         <input
           type="range"
           min={1}
@@ -256,7 +235,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
 
       <div style={{ marginTop: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <span style={{ fontSize: 12 }}>슬리브 바닥 깊이 (m):</span>
+          <span style={{ fontSize: 12 }}>모델 바닥 깊이 (m):</span>
           <input
             type="number"
             min={10}
@@ -295,7 +274,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
         <div style={{ fontSize: 12, color: C.tertiary, marginBottom: 6 }}>지층 표시 제어</div>
         {["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"].map((key) => {
           const on = visibility[key]
-          const disabled = key === "unknown" && basementMode === "extend" // 연장 모드: 미분류 없음
+          const disabled = key === "unknown" && basementMode === "extend"
           return (
             <div
               key={key}
@@ -324,7 +303,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
                 }}
               />
               {LAYER_LABEL[key]}
-              <span style={{ marginLeft: "auto", fontSize: 10, color: C.tertiary }}>{on ? "켜짐" : "꺼짐"}</span>
+              <span style={{ marginLeft: "auto", fontSize: 10, color: C.tertiary }}>{on ? "켬" : "끔"}</span>
             </div>
           )
         })}
@@ -342,7 +321,6 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
               }}
             >
               연장
-              <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(Leapfrog)</span>
             </button>
             <button
               onClick={() => setBasementMode("unknown")}
@@ -355,15 +333,8 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
               }}
             >
               미분류 유지
-              <span style={{ display: "block", fontSize: "9px", opacity: 0.8 }}>(조사 한계 표시)</span>
             </button>
           </div>
-          <div style={{ fontSize: 10, color: "#6a7a98", marginTop: 4, paddingLeft: 2 }}>
-            연장: 최심 관측 지층이 모델 바닥까지 동일 지층으로 이어집니다.
-          </div>
-        </div>
-        <div style={{ fontSize: 10, color: "#6a7a98", marginTop: 6, paddingLeft: 4 }}>
-          윗면 지도는 오버랩 표시 스위치로 독립 제어됩니다.
         </div>
       </div>
 
@@ -392,7 +363,7 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
             flexShrink: 0,
           }}
         />
-        시추공 기둥 오버랩
+        시추공 기둥 표시
       </div>
     </div>
   )

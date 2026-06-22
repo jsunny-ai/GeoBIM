@@ -1,6 +1,7 @@
 """시추공 라우터."""
 
 import json
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from geoalchemy2 import Geometry
@@ -91,6 +92,10 @@ class ByAreaRequest(BaseModel):
     project_id: int | None = None
     include_strata: bool = False
     borehole_ids: list[int] | None = None
+
+
+class DuplicateMergeRequest(BaseModel):
+    mode: str = "exact"
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +776,274 @@ async def delete_borehole(
     )
     await db.commit()
     return {"ok": True, "id": borehole_id}
+
+
+def _strata_signature(strata: list[Stratum]) -> tuple:
+    return tuple(
+        (
+            round(float(s.depth_top), 4),
+            round(float(s.depth_bottom), 4),
+            s.soil_type or "",
+        )
+        for s in sorted(strata, key=lambda item: (item.depth_top, item.depth_bottom, item.soil_type or ""))
+        if s.deleted_at is None
+    )
+
+
+def _duplicate_key(borehole: Borehole, loc_json: str | None) -> tuple:
+    lng, lat = _loc_to_lng_lat(loc_json)
+    return borehole.name, round(lng, 7), round(lat, 7)
+
+
+def _coordinate_key(_borehole: Borehole, loc_json: str | None) -> tuple:
+    lng, lat = _loc_to_lng_lat(loc_json)
+    return round(lng, 7), round(lat, 7)
+
+
+def _duplicate_item(borehole: Borehole, loc_json: str | None) -> dict:
+    lng, lat = _loc_to_lng_lat(loc_json)
+    return {
+        "id": borehole.id,
+        "name": borehole.name,
+        "project_id": borehole.project_id,
+        "longitude": lng,
+        "latitude": lat,
+        "elevation": borehole.elevation,
+        "data_origin": borehole.data_origin,
+        "source_file": borehole.source_file,
+        "strata_count": len([s for s in borehole.strata if s.deleted_at is None]),
+        "max_depth": max([s.depth_bottom for s in borehole.strata if s.deleted_at is None], default=None),
+    }
+
+
+async def _load_duplicate_groups(db: AsyncSession) -> list[dict]:
+    rows = (await db.execute(
+        select(
+            Borehole,
+            func.ST_AsGeoJSON(Borehole.location).label("loc_json"),
+        )
+        .options(selectinload(Borehole.strata))
+        .where(Borehole.deleted_at.is_(None))
+    )).all()
+
+    grouped: dict[tuple, list[tuple[Borehole, str | None]]] = defaultdict(list)
+    coord_grouped: dict[tuple, list[tuple[Borehole, str | None]]] = defaultdict(list)
+    for borehole, loc_json in rows:
+        grouped[_duplicate_key(borehole, loc_json)].append((borehole, loc_json))
+        coord_grouped[_coordinate_key(borehole, loc_json)].append((borehole, loc_json))
+
+    duplicate_groups: list[dict] = []
+    handled_ids: set[int] = set()
+    for (name, lng, lat), members in grouped.items():
+        if len(members) < 2:
+            continue
+
+        signatures = {
+            (
+                None if borehole.elevation is None else round(float(borehole.elevation), 4),
+                _strata_signature(borehole.strata),
+            )
+            for borehole, _loc_json in members
+        }
+        is_exact = len(signatures) == 1
+        items = [_duplicate_item(borehole, loc_json) for borehole, loc_json in members]
+        handled_ids.update(item["id"] for item in items)
+        duplicate_groups.append({
+            "key": {"name": name, "longitude": lng, "latitude": lat},
+            "duplicate_type": "exact" if is_exact else "conflict",
+            "count": len(items),
+            "keep_id": min(item["id"] for item in items),
+            "items": sorted(items, key=lambda item: item["id"]),
+        })
+
+    for (lng, lat), members in coord_grouped.items():
+        active_members = [
+            (borehole, loc_json)
+            for borehole, loc_json in members
+            if borehole.id not in handled_ids
+        ]
+        if len(active_members) < 2:
+            continue
+        names = {borehole.name for borehole, _loc_json in active_members}
+        if len(names) < 2:
+            continue
+
+        items = [_duplicate_item(borehole, loc_json) for borehole, loc_json in active_members]
+        duplicate_groups.append({
+            "key": {
+                "name": " / ".join(sorted(names)),
+                "longitude": lng,
+                "latitude": lat,
+            },
+            "duplicate_type": "coordinate_conflict",
+            "count": len(items),
+            "keep_id": min(item["id"] for item in items),
+            "items": sorted(items, key=lambda item: item["id"]),
+        })
+
+    order = {"conflict": 0, "coordinate_conflict": 1, "exact": 2}
+    duplicate_groups.sort(key=lambda group: (order.get(group["duplicate_type"], 9), -group["count"], group["key"]["name"]))
+    return duplicate_groups
+
+
+@router.get("/admin/duplicates")
+async def list_duplicate_boreholes(
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    if _current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="관리자만 중복 시추공을 조회할 수 있습니다.")
+
+    groups = await _load_duplicate_groups(db)
+    exact_groups = [group for group in groups if group["duplicate_type"] == "exact"]
+    conflict_groups = [group for group in groups if group["duplicate_type"] == "conflict"]
+    coordinate_conflict_groups = [group for group in groups if group["duplicate_type"] == "coordinate_conflict"]
+    return {
+        "groups": groups,
+        "summary": {
+            "groups": len(groups),
+            "exact_groups": len(exact_groups),
+            "conflict_groups": len(conflict_groups),
+            "coordinate_conflict_groups": len(coordinate_conflict_groups),
+            "duplicate_rows": sum(group["count"] for group in groups),
+            "removable_rows": sum(group["count"] - 1 for group in exact_groups),
+        },
+    }
+
+
+async def _replace_project_bbox_ids(db: AsyncSession, id_map: dict[int, int]) -> int:
+    projects = (await db.execute(
+        select(Project).where(Project.deleted_at.is_(None), Project.bbox.is_not(None))
+    )).scalars().all()
+    changed = 0
+    for project in projects:
+        if not isinstance(project.bbox, dict):
+            continue
+        raw_ids = project.bbox.get("borehole_ids")
+        if not isinstance(raw_ids, list):
+            continue
+        next_ids: list[int] = []
+        seen: set[int] = set()
+        touched = False
+        for value in raw_ids:
+            try:
+                borehole_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            mapped_id = id_map.get(borehole_id, borehole_id)
+            touched = touched or mapped_id != borehole_id
+            if mapped_id not in seen:
+                next_ids.append(mapped_id)
+                seen.add(mapped_id)
+            else:
+                touched = True
+        if touched:
+            project.bbox = {**project.bbox, "borehole_ids": next_ids}
+            changed += 1
+    return changed
+
+
+async def _merge_duplicate_boreholes(db: AsyncSession, keep_id: int, duplicate_ids: list[int]) -> dict:
+    if not duplicate_ids:
+        return {"removed": 0, "links_updated": 0, "links_deleted": 0}
+
+    links = (await db.execute(
+        select(ProjectBoreholeLink).where(
+            ProjectBoreholeLink.borehole_id.in_([keep_id, *duplicate_ids]),
+            ProjectBoreholeLink.deleted_at.is_(None),
+        )
+    )).scalars().all()
+
+    keep_projects = {link.project_id for link in links if link.borehole_id == keep_id}
+    links_updated = 0
+    links_deleted = 0
+    for link in links:
+        if link.borehole_id == keep_id:
+            continue
+        if link.project_id in keep_projects:
+            link.deleted_at = func.now()
+            links_deleted += 1
+        else:
+            link.borehole_id = keep_id
+            keep_projects.add(link.project_id)
+            links_updated += 1
+
+    overrides = (await db.execute(
+        select(ProjectBoreholeOverride).where(
+            ProjectBoreholeOverride.source_borehole_id.in_(duplicate_ids),
+            ProjectBoreholeOverride.deleted_at.is_(None),
+        )
+    )).scalars().all()
+    keep_override_projects = {
+        row.project_id for row in (await db.execute(
+            select(ProjectBoreholeOverride.project_id).where(
+                ProjectBoreholeOverride.source_borehole_id == keep_id,
+                ProjectBoreholeOverride.deleted_at.is_(None),
+            )
+        )).all()
+    }
+    overrides_updated = 0
+    overrides_deleted = 0
+    for override in overrides:
+        if override.project_id in keep_override_projects:
+            override.deleted_at = func.now()
+            overrides_deleted += 1
+        else:
+            override.source_borehole_id = keep_id
+            keep_override_projects.add(override.project_id)
+            overrides_updated += 1
+
+    await db.execute(
+        Borehole.__table__.update()
+        .where(Borehole.id.in_(duplicate_ids), Borehole.deleted_at.is_(None))
+        .values(deleted_at=func.now())
+    )
+    return {
+        "removed": len(duplicate_ids),
+        "links_updated": links_updated,
+        "links_deleted": links_deleted,
+        "overrides_updated": overrides_updated,
+        "overrides_deleted": overrides_deleted,
+    }
+
+
+@router.post("/admin/duplicates/merge-exact")
+async def merge_exact_duplicate_boreholes(
+    body: DuplicateMergeRequest,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    if _current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="관리자만 중복 시추공을 정리할 수 있습니다.")
+    if body.mode != "exact":
+        raise HTTPException(status_code=422, detail="지원되는 mode는 exact 뿐입니다.")
+
+    groups = await _load_duplicate_groups(db)
+    exact_groups = [group for group in groups if group["duplicate_type"] == "exact"]
+    id_map: dict[int, int] = {}
+    result = {
+        "groups_merged": 0,
+        "removed": 0,
+        "links_updated": 0,
+        "links_deleted": 0,
+        "overrides_updated": 0,
+        "overrides_deleted": 0,
+        "projects_bbox_updated": 0,
+    }
+
+    for group in exact_groups:
+        keep_id = int(group["keep_id"])
+        duplicate_ids = [int(item["id"]) for item in group["items"] if int(item["id"]) != keep_id]
+        for duplicate_id in duplicate_ids:
+            id_map[duplicate_id] = keep_id
+        merged = await _merge_duplicate_boreholes(db, keep_id, duplicate_ids)
+        result["groups_merged"] += 1
+        for key in ("removed", "links_updated", "links_deleted", "overrides_updated", "overrides_deleted"):
+            result[key] += int(merged.get(key, 0))
+
+    result["projects_bbox_updated"] = await _replace_project_bbox_ids(db, id_map)
+    await db.commit()
+    return result
 
 
 @router.put("/{borehole_id}/project-overrides/{project_id}")

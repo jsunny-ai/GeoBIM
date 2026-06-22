@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { fetchBoreholesByBbox } from "@/lib/parseUrl"
 import type { Borehole } from "@/lib/types"
 import { buildElevationGrid } from "../lib/terrain"
+import { apiUrl } from "@shared/urls"
 
 export function useBoreholeData(
   bbox: number[] | null,
@@ -23,7 +24,7 @@ export function useBoreholeData(
     setFetchErr(null)
 
     const boreholePromise = projectId
-      ? fetch(`/api/v1/projects/${projectId}/boreholes/effective`)
+      ? fetch(apiUrl(`/api/v1/projects/${projectId}/boreholes/effective`))
           .then(async (res) => {
             if (!res.ok) throw new Error(`프로젝트 시추공 API 오류: HTTP ${res.status}`)
             const data = await res.json()

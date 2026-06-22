@@ -160,6 +160,24 @@ class GeologicalRBF:
 
         return np.array(elevations)
 
+    def count_layer_real_hits(self, layer_name: str) -> int:
+        """
+        해당 지층(strata_group)을 실제로 보유한 '실측' 시추공 수를 셉니다.
+        팬텀(is_phantom=True)은 인접 실측공의 strata를 복제하므로 제외합니다.
+
+        반환값이 0이면 그 지층은 보간 근거가 없어 폴백(상위 지층 바닥 복제)으로만
+        채워지므로, 내보내기에서 실존 경계면처럼 출력하면 안 됩니다.
+        """
+        n = 0
+        for bh in self.all_boreholes:
+            if bh.get("is_phantom"):
+                continue
+            for s in bh.get("strata", []) or []:
+                if s.get("strata_group") == layer_name:
+                    n += 1
+                    break
+        return n
+
     def _get_bh_layer_bottom(self, bh: dict, layer_name: str) -> float | None:
         elev = bh["elevation"]
         for s in bh.get("strata", []):

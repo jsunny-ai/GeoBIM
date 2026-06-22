@@ -5,6 +5,7 @@
 // 열람하고, 어떤 버전으로든 '이력 보존형 복원'(새 버전 생성)이 가능하다.
 import React, { useCallback, useEffect, useState } from "react"
 import type { Borehole } from "@/lib/types"
+import { apiUrl } from "@shared/urls"
 
 const C = {
   border: "#e9e4da",
@@ -79,7 +80,7 @@ export const PdfComparePanel: React.FC<Props> = ({ borehole, onClose, onSaved })
   // ── 원본 PDF job 조회 ──────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
-    fetch(`/api/v1/boreholes/${borehole.id}/source-pdf`)
+    fetch(apiUrl(`/api/v1/boreholes/${borehole.id}/source-pdf`))
       .then(async (r) => {
         if (!r.ok) {
           const body = await r.json().catch(() => ({} as any))
@@ -94,7 +95,7 @@ export const PdfComparePanel: React.FC<Props> = ({ borehole, onClose, onSaved })
 
   // ── 버전 타임라인 (v0 원본 포함) ──────────────────────────────────────
   const loadHistory = useCallback(() => {
-    fetch(`/api/v1/boreholes/${borehole.id}/revisions`)
+    fetch(apiUrl(`/api/v1/boreholes/${borehole.id}/revisions`))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data) => {
         setHistory(data.revisions ?? [])
@@ -125,7 +126,7 @@ export const PdfComparePanel: React.FC<Props> = ({ borehole, onClose, onSaved })
     setSaving(true)
     setErr(null)
     try {
-      const res = await fetch(`/api/v1/boreholes/${borehole.id}/revisions`, {
+      const res = await fetch(apiUrl(`/api/v1/boreholes/${borehole.id}/revisions`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -152,7 +153,7 @@ export const PdfComparePanel: React.FC<Props> = ({ borehole, onClose, onSaved })
     setSaving(true)
     setErr(null)
     try {
-      const res = await fetch(`/api/v1/boreholes/${borehole.id}/restore`, {
+      const res = await fetch(apiUrl(`/api/v1/boreholes/${borehole.id}/restore`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ version }),
@@ -215,7 +216,7 @@ export const PdfComparePanel: React.FC<Props> = ({ borehole, onClose, onSaved })
             <div style={{ flex: 1, overflow: "auto", background: "#e8e4dd", display: "flex", justifyContent: "center" }}>
               {pdfInfo ? (
                 <img
-                  src={`/api/v1/pdf-extraction/jobs/${pdfInfo.job_id}/pages/${page}.png`}
+                  src={apiUrl(`/api/v1/pdf-extraction/jobs/${pdfInfo.job_id}/pages/${page}.png`)}
                   alt={`PDF p.${page}`}
                   style={{ width: `${zoom * 100}%`, height: "fit-content", boxShadow: "0 2px 10px rgba(0,0,0,.2)", margin: 8 }}
                 />

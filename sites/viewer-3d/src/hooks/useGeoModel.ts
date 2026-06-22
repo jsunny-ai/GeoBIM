@@ -437,7 +437,8 @@ export function useGeoModel(
       const diagStr = diag
         ? ` · [진단] 최심관측 토${diag.bhByDeepest[0]}/풍${diag.bhByDeepest[1]}/연${diag.bhByDeepest[2]}/보${diag.bhByDeepest[3]}/경${diag.bhByDeepest[4]}` +
           ` · 배경암 ${LAYER_KO[diag.bgRank] ?? "-"} · 바닥점유 토${diag.bottomFill[0]}/풍${diag.bottomFill[1]}/연${diag.bottomFill[2]}/보${diag.bottomFill[3]}/경${diag.bottomFill[4]}` +
-          ` · 최대경사 ${diag.maxSlope} m/m(${LAYER_KO[diag.maxSlopeLayer] ?? "-"})`
+          ` · 최대경사 ${diag.maxSlope} m/m(${LAYER_KO[diag.maxSlopeLayer] ?? "-"})` +
+          ` · 시추공경계오차 최대 ${diag.boundarySnap?.maxAbsError ?? 0}m`
         : ""
       setStatus(
         `완료 · 시추공 ${boreholes.length}개 · 격자 ${N}x${N}x${MZ} (dz ${dz.toFixed(1)}m) · ` +

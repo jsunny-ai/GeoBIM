@@ -4,32 +4,40 @@ export function parseUrlParams(): ParsedParams {
   const sp = new URLSearchParams(window.location.search)
   const bboxStr = sp.get("bbox")
   const polyStr = sp.get("polygon")
-  const projStr = sp.get("projectId")
+  const projStr = sp.get("projectId") ?? sp.get("project_id")
   const bhIdsStr = sp.get("boreholeIds")
+  const projectId = projStr ? Number(projStr) : null
+
+  const boreholeIds = bhIdsStr
+    ? bhIdsStr.split(",").map(Number).filter((n) => Number.isFinite(n))
+    : []
 
   if (!bboxStr) {
-    return { bbox: null, polygon: null, projectId: null, boreholeIds: [], error: "bbox 파라미터 없음 - 1단계(지도)부터 시작하세요." }
+    if (projectId && Number.isFinite(projectId)) {
+      return { bbox: null, polygon: null, projectId, boreholeIds, error: null }
+    }
+    return {
+      bbox: null,
+      polygon: null,
+      projectId: null,
+      boreholeIds,
+      error: "bbox 파라미터가 없습니다. 지도 또는 프로젝트에서 다시 진입해주세요.",
+    }
   }
 
   try {
     const bbox = bboxStr.split(",").map(Number) as [number, number, number, number]
-    if (bbox.length !== 4 || bbox.some(isNaN)) {
-      return { bbox: null, polygon: null, projectId: null, boreholeIds: [], error: "잘못된 bbox 형식" }
+    if (bbox.length !== 4 || bbox.some((n) => !Number.isFinite(n))) {
+      return { bbox: null, polygon: null, projectId, boreholeIds, error: "bbox 형식이 올바르지 않습니다." }
     }
 
     const polygon = polyStr
       ? (JSON.parse(decodeURIComponent(polyStr)) as { lng: number; lat: number }[])
       : null
 
-    const projectId = projStr ? Number(projStr) : null
-
-    const boreholeIds = bhIdsStr
-      ? bhIdsStr.split(",").map(Number).filter((n) => !isNaN(n))
-      : []
-
     return { bbox, polygon, projectId, boreholeIds, error: null }
   } catch {
-    return { bbox: null, polygon: null, projectId: null, boreholeIds: [], error: "URL 파라미터 파싱 실패" }
+    return { bbox: null, polygon: null, projectId, boreholeIds, error: "URL 파라미터를 읽지 못했습니다." }
   }
 }
 
@@ -39,10 +47,16 @@ export async function fetchBoreholes(
   boreholeIds: number[] = [],
   polygon: { lng: number; lat: number }[] | null = null,
 ): Promise<any[]> {
+  if (projectId) {
+    const r = await fetch(`/api/v1/projects/${projectId}/boreholes/effective`)
+    if (!r.ok) throw new Error(`프로젝트 시추공 API 오류: HTTP ${r.status}`)
+    const data = await r.json()
+    return data.boreholes ?? []
+  }
+
   const ids = boreholeIds.filter((n) => Number.isFinite(n))
   if (ids.length > 0) {
-    let url = `/api/v1/boreholes/?ids=${ids.join(",")}&limit=${Math.max(ids.length, 1)}&include_strata=true`
-    if (projectId) url += `&project_id=${projectId}`
+    const url = `/api/v1/boreholes/?ids=${ids.join(",")}&limit=${Math.max(ids.length, 1)}&include_strata=true`
     const r = await fetch(url)
     if (!r.ok) throw new Error(`시추공 API 오류: HTTP ${r.status}`)
     const data = await r.json()

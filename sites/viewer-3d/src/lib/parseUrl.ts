@@ -1,4 +1,5 @@
 import type { Borehole } from "@shared/types"
+import { apiUrl } from "@shared/urls"
 
 export interface LngLat {
   lng: number
@@ -63,7 +64,7 @@ export async function fetchBoreholesByBbox(
   // 2차: 실행 중인 백엔드가 ids 미지원 구버전이면 단건 엔드포인트로 폴백
   const ids = (boreholeIds ?? []).map(Number).filter((n) => Number.isFinite(n))
   const idsParam = ids.length > 0 ? `&ids=${ids.join(",")}` : ""
-  const url = `/api/v1/boreholes?bbox=${minLng},${minLat},${maxLng},${maxLat}&limit=5000&include_strata=true${idsParam}`
+  const url = apiUrl(`/api/v1/boreholes?bbox=${minLng},${minLat},${maxLng},${maxLat}&limit=5000&include_strata=true${idsParam}`)
   const r = await fetch(url)
   if (!r.ok) throw new Error(`시추공 API 오류: HTTP ${r.status}`)
   const data = await r.json()
@@ -82,7 +83,7 @@ export async function fetchBoreholesByBbox(
   const fetched = await Promise.all(
     ids.map(async (id) => {
       try {
-        const rr = await fetch(`/api/v1/boreholes/${id}`)
+        const rr = await fetch(apiUrl(`/api/v1/boreholes/${id}`))
         return rr.ok ? ((await rr.json()) as Borehole) : null
       } catch {
         return null

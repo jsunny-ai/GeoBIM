@@ -1,4 +1,6 @@
 // =============================================================================
+
+import { apiUrl } from "@shared/urls"
 // terrain.ts — 지형/타일 공통 유틸 (step2 / step3 공유)
 //
 // - lngToWorldX / latToWorldY : Web Mercator 타일 좌표
@@ -86,7 +88,7 @@ export async function buildAreaCanvas(
     const jobs: Promise<void>[] = []
     for (let tx = txMin; tx <= txMax; tx++)
       for (let ty = tyMin; ty <= tyMax; ty++) {
-        const url = `/api/v1/tiles/vworld/${layer}/${zoom}/${tx}/${ty}`
+        const url = apiUrl(`/api/v1/tiles/vworld/${layer}/${zoom}/${tx}/${ty}`)
         jobs.push(loadImage(url).then((img) => {
           if (img) gctx.drawImage(img, (tx - txMin) * 256, (ty - tyMin) * 256)
         }))
@@ -188,7 +190,7 @@ export async function buildElevationGrid(
   const jobs: Promise<void>[] = []
   for (let tx = txMin; tx <= txMax; tx++)
     for (let ty = tyMin; ty <= tyMax; ty++) {
-      const url = `/api/v1/tiles/terrain/${zoom}/${tx}/${ty}`
+      const url = apiUrl(`/api/v1/tiles/terrain/${zoom}/${tx}/${ty}`)
       jobs.push(loadImage(url).then((img) => {
         if (img) ctx.drawImage(img, (tx - txMin) * 256, (ty - tyMin) * 256)
       }))
@@ -261,4 +263,3 @@ export async function buildElevationGrid(
 
   return { elevGrid, gx, gy, terrainElevAt }
 }
-

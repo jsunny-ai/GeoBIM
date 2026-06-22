@@ -126,6 +126,83 @@ def _apply_project_link(data: dict, link: ProjectBoreholeLink) -> dict:
     return merged
 
 
+def _bbox_borehole_ids(bbox: dict | None) -> list[int]:
+    if not isinstance(bbox, dict):
+        return []
+    raw_ids = bbox.get("borehole_ids")
+    if not isinstance(raw_ids, list):
+        return []
+
+    ids: list[int] = []
+    seen: set[int] = set()
+    for value in raw_ids:
+        try:
+            borehole_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if borehole_id not in seen:
+            ids.append(borehole_id)
+            seen.add(borehole_id)
+    return ids
+
+
+async def _sync_project_borehole_links(
+    db: AsyncSession,
+    project: Project,
+    selected_borehole_ids: list[int],
+    user: User,
+) -> None:
+    if not selected_borehole_ids:
+        return
+
+    boreholes = (await db.execute(
+        select(Borehole).where(
+            Borehole.id.in_(selected_borehole_ids),
+            Borehole.deleted_at.is_(None),
+        )
+    )).scalars().all()
+    borehole_map = {b.id: b for b in boreholes}
+
+    links = (await db.execute(
+        select(ProjectBoreholeLink).where(
+            ProjectBoreholeLink.project_id == project.id,
+            ProjectBoreholeLink.borehole_id.in_(selected_borehole_ids),
+        )
+    )).scalars().all()
+
+    link_map: dict[int, ProjectBoreholeLink] = {}
+    for link in links:
+        current = link_map.get(link.borehole_id)
+        if current is None or (current.deleted_at is not None and link.deleted_at is None):
+            link_map[link.borehole_id] = link
+
+    for borehole_id in selected_borehole_ids:
+        borehole = borehole_map.get(borehole_id)
+        if borehole is None:
+            continue
+
+        desired_role = (
+            "new"
+            if borehole.project_id == project.id and borehole.is_supplementary
+            else "existing"
+        )
+        link = link_map.get(borehole_id)
+        if link is None:
+            db.add(ProjectBoreholeLink(
+                project_id=project.id,
+                borehole_id=borehole_id,
+                project_role=desired_role,
+                linked_reason="bbox_selected",
+                registered_by_id=user.id,
+            ))
+            continue
+
+        link.deleted_at = None
+        if link.project_role == "excluded":
+            link.project_role = desired_role
+            link.linked_reason = "bbox_selected"
+
+
 @router.get("/")
 async def list_projects(
     has_bbox: bool | None = None,
@@ -196,11 +273,26 @@ async def list_effective_project_boreholes(
     )).scalars().all()
     if project_links:
         linked_boreholes = [link.borehole for link in project_links if link.borehole.deleted_at is None]
+        linked_ids = {b.id for b in linked_boreholes}
+        supplementary_stmt = (
+            select(Borehole)
+            .options(selectinload(Borehole.strata))
+            .where(
+                Borehole.project_id == project_id,
+                Borehole.deleted_at.is_(None),
+                Borehole.is_supplementary.is_(True),
+            )
+        )
+        if linked_ids:
+            supplementary_stmt = supplementary_stmt.where(~Borehole.id.in_(linked_ids))
+        unlinked_supplementary = (await db.execute(supplementary_stmt)).scalars().all()
+        all_boreholes = linked_boreholes + unlinked_supplementary
+
         loc_rows = (await db.execute(
             select(
                 Borehole.id,
                 func.ST_AsGeoJSON(Borehole.location).label("loc_json"),
-            ).where(Borehole.id.in_([b.id for b in linked_boreholes]))
+            ).where(Borehole.id.in_([b.id for b in all_boreholes]))
         )).all()
         loc_map = {row.id: row.loc_json for row in loc_rows}
 
@@ -213,7 +305,7 @@ async def list_effective_project_boreholes(
             )
         )).scalars().all()
         override_map = {o.source_borehole_id: o for o in overrides}
-        latest_revs = await _latest_revision_map(db, [b.id for b in linked_boreholes])
+        latest_revs = await _latest_revision_map(db, [b.id for b in all_boreholes])
 
         rows: list[dict] = []
         for link in project_links:
@@ -228,13 +320,25 @@ async def list_effective_project_boreholes(
             if override:
                 item = _apply_override(item, override)
             rows.append(_apply_project_link(item, link))
+        for b in unlinked_supplementary:
+            item = _borehole_dict(b, loc_map.get(b.id))
+            rev = latest_revs.get(b.id)
+            if rev is not None:
+                item = _apply_revision(item, rev)
+            rows.append({
+                **item,
+                "project_role": "new",
+                "linked_reason": "supplementary_project_member",
+                "is_supplementary": True,
+                "data_status": "new",
+            })
 
         return {
             "boreholes": rows,
             "count": len(rows),
             "total": len(rows),
             "selected_count": len([link for link in project_links if link.project_role == "existing"]),
-            "new_count": len([link for link in project_links if link.project_role == "new"]),
+            "new_count": len([link for link in project_links if link.project_role == "new"]) + len(unlinked_supplementary),
             "override_count": len(overrides),
         }
 
@@ -354,6 +458,13 @@ async def create_project(
         owner_id=_current_user.id,
     )
     db.add(project)
+    await db.flush()
+    await _sync_project_borehole_links(
+        db,
+        project,
+        _bbox_borehole_ids(project_in.bbox),
+        _current_user,
+    )
     await db.commit()
     await db.refresh(project)
     return project
@@ -380,6 +491,12 @@ async def update_project(
     project.region = project_in.region
     project.source_crs = project_in.source_crs
     project.bbox = project_in.bbox
+    await _sync_project_borehole_links(
+        db,
+        project,
+        _bbox_borehole_ids(project_in.bbox),
+        _current_user,
+    )
     
     await db.commit()
     await db.refresh(project)

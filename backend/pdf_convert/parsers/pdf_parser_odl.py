@@ -86,11 +86,34 @@ def clean_float(val_str):
         cleaned = parts[0] + '.' + "".join(parts[1:])
         
     if not cleaned or cleaned == '.' or cleaned == '-': return None
-    
+
     try:
         return float(cleaned)
     except ValueError:
         return None
+
+def extract_last_depth(val_str):
+    """심도 셀에서 공백/줄바꿈/<br>로 분리된 복수 숫자를 '토큰 단위로 분리'해
+    마지막(=하심도) 값만 반환한다.
+
+    [버그 배경] PyMuPDF/표 추출이 상·하 심도를 한 셀로 합치는 경우가 있다
+    ('25\\n40', '25 40', '25<br>40'). 이를 clean_float()에 그대로 넣으면
+    `re.sub(r'[^\\d.\\-]','')`가 공백·줄바꿈을 제거하며 '2540'으로 붙여버린다
+    (상심도 25가 하심도 40 앞에 중복 부착 → 하심도 2540). 그 결과 DB에
+    depth_bottom=2540 같은 이상값이 저장됐다.
+    토큰을 먼저 분리하면 [25, 40]이 되어 마지막 40을 안전하게 하심도로 취한다.
+    소수점(25.40)은 한 토큰으로 보존되므로 정상값은 영향받지 않는다.
+    범위 표기('0.0 ~ 25.0')도 마지막 토큰 25.0을 취해 기존 동작과 일치한다.
+    """
+    if val_str is None:
+        return None
+    text = unicodedata.normalize("NFKC", str(val_str)).replace("O", "0").replace("o", "0")
+    last = None
+    for m in re.finditer(r"[-+]?\d+(?:[.,]\d+)?", text):
+        v = clean_float(m.group(0).replace(",", "."))
+        if v is not None:
+            last = v
+    return last
 
 def validate_suwon_coordinates(x, y):
     """
@@ -424,7 +447,9 @@ def extract_all_from_md(md_path: str, project_name: str = "", pdf_path: str = No
             row_match = re.match(r'^\|\s*([^\|]+)\|\s*([^\|]+)\|\s*([^\|]+)\|', line)
             if row_match:
                 try:
-                    temp_depth = clean_float(row_match.group(1).strip())
+                    # [심도 concat 버그 수정] 상·하 심도가 한 셀로 합쳐진 경우
+                    # ('25 40'→clean_float→2540)를 막기 위해 토큰 분리 후 마지막값(하심도) 사용
+                    temp_depth = extract_last_depth(row_match.group(1).strip())
                     if temp_depth is None: continue
                     
                     # 수치 기반 자동 시추공 전환 (심도 리셋 감지)

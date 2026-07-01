@@ -207,6 +207,7 @@ export async function convertPreviewCoordinates(row: PreviewRow): Promise<Previe
     x: source.x,
     y: source.y,
     source_crs: crs,
+    coordinate_order: row.coordinate_order,
     borehole_id: String(row["시추공명"] ?? "preview"),
   })
   if (!converted.valid) return null
@@ -251,7 +252,8 @@ export function uniquePreviewPoints(rows: PreviewRow[]): PreviewPoint[] {
     if (lon === null || lat === null) return
     if (lon < 120 || lon > 135 || lat < 30 || lat > 45) return
     const name = previewBoreholeName(row, index)
-    const key = `${name}:${lon.toFixed(7)}:${lat.toFixed(7)}`
+    const groupId = String(row.__previewGroupId ?? `${name}:${lon.toFixed(7)}:${lat.toFixed(7)}`)
+    const key = groupId
     if (!points.has(key)) {
       points.set(key, {
         id: key,

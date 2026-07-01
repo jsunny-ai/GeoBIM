@@ -11,12 +11,12 @@ import {
 
 export function CoordinatePreviewMap({
   rows,
-  selectedName,
+  selectedId,
   onSelectPoint,
 }: {
   rows: PreviewRow[]
-  selectedName: string | null
-  onSelectPoint: (name: string) => void
+  selectedId: string | null
+  onSelectPoint: (id: string) => void
 }) {
   const points = uniquePreviewPoints(rows)
   const [mapCenter, setMapCenter] = useState<PreviewPoint | null>(null)
@@ -28,15 +28,14 @@ export function CoordinatePreviewMap({
     centerWorld: { x: number; y: number }
   } | null>(null)
 
-  const selectedPoint = selectedName ? points.find((point) => point.name === selectedName) ?? null : null
+  const selectedPoint = selectedId ? points.find((point) => point.id === selectedId) ?? null : null
 
-  // selectedName이 바뀔 때(새 시추공 선택)만 지도를 재중심한다.
+  // 시추공 그룹 선택 또는 CRS 변환으로 좌표가 바뀌면 해당 위치로 재중심한다.
   useEffect(() => {
     if (selectedPoint) {
       setMapCenter(selectedPoint)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedName])
+  }, [selectedId, selectedPoint?.lon, selectedPoint?.lat])
 
   if (points.length === 0) {
     return (
@@ -64,12 +63,17 @@ export function CoordinatePreviewMap({
     })),
   )
   const coordinateGroups = new Map<string, PreviewPoint[]>()
+  const nameGroups = new Map<string, PreviewPoint[]>()
   points.forEach((point) => {
     const key = `${point.lon.toFixed(7)}:${point.lat.toFixed(7)}`
     if (!coordinateGroups.has(key)) {
       coordinateGroups.set(key, [])
     }
     coordinateGroups.get(key)!.push(point)
+    if (!nameGroups.has(point.name)) {
+      nameGroups.set(point.name, [])
+    }
+    nameGroups.get(point.name)!.push(point)
   })
 
   const markers = points.map((point) => {
@@ -89,6 +93,10 @@ export function CoordinatePreviewMap({
 
     return {
       ...point,
+      displayName:
+        (nameGroups.get(point.name)?.length ?? 0) > 1
+          ? `${point.name} (${(nameGroups.get(point.name)?.indexOf(point) ?? 0) + 1})`
+          : point.name,
       left,
       top,
     }
@@ -96,7 +104,7 @@ export function CoordinatePreviewMap({
   const crsLabels = Array.from(new Set(points.map((point) => point.crs).filter(Boolean)))
 
   function moveToPoint(point: PreviewPoint) {
-    onSelectPoint(point.name)
+    onSelectPoint(point.id)
     setMapCenter(point)
   }
 
@@ -226,21 +234,21 @@ export function CoordinatePreviewMap({
               onClick={() => moveToPoint(marker)}
               className="absolute -translate-x-1/2 -translate-y-full focus:outline-none"
               style={{ left: marker.left, top: marker.top }}
-              title={`${marker.name} (${marker.lat.toFixed(6)}, ${marker.lon.toFixed(6)})`}
+              title={`${marker.displayName} (${marker.lat.toFixed(6)}, ${marker.lon.toFixed(6)})`}
             >
               <div className="flex flex-col items-center">
                 <span
                   className={cn(
                     "mb-1 rounded px-1.5 py-0.5 text-[10px] font-medium shadow",
-                    selectedName === marker.name ? "bg-amber-300 text-slate-950" : "bg-slate-950/90 text-sky-100",
+                    selectedId === marker.id ? "bg-amber-300 text-slate-950" : "bg-slate-950/90 text-sky-100",
                   )}
                 >
-                  {marker.name}
+                  {marker.displayName}
                 </span>
                 <MapPin
                   className={cn(
                     "h-6 w-6 drop-shadow",
-                    selectedName === marker.name ? "fill-amber-300 text-slate-950" : "fill-sky-300 text-sky-950",
+                    selectedId === marker.id ? "fill-amber-300 text-slate-950" : "fill-sky-300 text-sky-950",
                   )}
                 />
               </div>

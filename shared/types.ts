@@ -46,6 +46,9 @@ export interface Borehole {
   longitude: number         // WGS84 경도
   latitude: number          // WGS84 위도
   elevation: number         // m (MSL 기준 표고)
+  groundwater_depth_bgl_m?: number | null
+  groundwater_head_elevation_m?: number | null
+  groundwater_observed_at?: string | null
   source_crs?: string | null
   strata: Stratum[]         // depth_top 오름차순
 }

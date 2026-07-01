@@ -202,13 +202,20 @@ export function marchingCubes(
   return { positions, normals }
 }
 
-export function buildSurfaceMesh(grid: number[][], boxW: number, boxD: number, mScale: number) {
+export function buildSurfaceMesh(
+  grid: number[][],
+  boxW: number,
+  boxD: number,
+  mScale: number,
+  xGrid?: number[][] | null,
+  zGrid?: number[][] | null,
+) {
   const Ny = grid.length, Nx = grid[0].length
-  const xAt = (i: number) => -boxW / 2 + (boxW * i) / (Nx - 1)
-  const zAt = (j: number) => boxD / 2 - (boxD * j) / (Ny - 1)
+  const xAt = (i: number, j: number) => xGrid?.[j]?.[i] ?? (-boxW / 2 + (boxW * i) / (Nx - 1))
+  const zAt = (j: number, i: number) => zGrid?.[j]?.[i] ?? (boxD / 2 - (boxD * j) / (Ny - 1))
   const positions: number[] = [], uvs: number[] = [], indices: number[] = []
   for (let j = 0; j < Ny; j++) for (let i = 0; i < Nx; i++) {
-    positions.push(xAt(i), grid[j][i] * mScale, zAt(j)); uvs.push(i / (Nx - 1), j / (Ny - 1))
+    positions.push(xAt(i, j), grid[j][i] * mScale, zAt(j, i)); uvs.push(i / (Nx - 1), j / (Ny - 1))
   }
   for (let j = 0; j < Ny - 1; j++) for (let i = 0; i < Nx - 1; i++) {
     const a = j * Nx + i, b = j * Nx + i + 1, c = (j + 1) * Nx + i, d = (j + 1) * Nx + i + 1
@@ -227,6 +234,65 @@ export function buildSurfaceMesh(grid: number[][], boxW: number, boxD: number, m
 //   · BOUNDARY_SMOOTH_PASSES : carving 부호장(두께)을 더 평활 → 윤곽이 유선형 곡선화
 // 값을 더 올리면 더 매끄러우나 삼각형 수↑(빌드/메모리 비용). 과도한 평활은 얇은
 // 렌즈를 침식하므로 4 안팎이 균형점. (필요 시 추가 조정)
+export function buildMaskedSurfaceGeometryData(
+  surfaceGrid: number[][],
+  signedGrid: number[][],
+  boxW: number,
+  boxD: number,
+  mScale: number,
+  xGrid?: number[][] | Float32Array[] | any,
+  zGrid?: number[][] | Float32Array[] | any,
+  yOffsetM = -0.03,
+) {
+  surfaceGrid = resampleGridBilinear(surfaceGrid, SOLID_MESH_SUBDIVISIONS)
+  signedGrid = resampleGridBilinear(signedGrid, SOLID_MESH_SUBDIVISIONS)
+  xGrid = xGrid ? resampleGridBilinear(xGrid, SOLID_MESH_SUBDIVISIONS) : xGrid
+  zGrid = zGrid ? resampleGridBilinear(zGrid, SOLID_MESH_SUBDIVISIONS) : zGrid
+
+  const Ny = surfaceGrid.length, Nx = surfaceGrid[0].length
+  const EPS = 0.001
+  const xAt = (i: number, j: number) => {
+    if (xGrid && xGrid[j]) return xGrid[j][i]
+    return -boxW / 2 + (boxW * i) / (Nx - 1)
+  }
+  const zAt = (j: number, i: number) => {
+    if (zGrid && zGrid[j]) return zGrid[j][i]
+    return boxD / 2 - (boxD * j) / (Ny - 1)
+  }
+
+  const positions: number[] = []
+  const indices: number[] = []
+  const addVert = (j: number, i: number) => {
+    const idx = positions.length / 3
+    positions.push(xAt(i, j), (surfaceGrid[j][i] + yOffsetM) * mScale, zAt(j, i))
+    return idx
+  }
+
+  for (let j = 0; j < Ny - 1; j++) {
+    for (let i = 0; i < Nx - 1; i++) {
+      const aOn = signedGrid[j][i] > EPS
+      const bOn = signedGrid[j][i + 1] > EPS
+      const cOn = signedGrid[j + 1][i] > EPS
+      const dOn = signedGrid[j + 1][i + 1] > EPS
+
+      if (aOn && bOn && dOn) {
+        const a = addVert(j, i)
+        const b = addVert(j, i + 1)
+        const d = addVert(j + 1, i + 1)
+        indices.push(a, b, d)
+      }
+      if (aOn && dOn && cOn) {
+        const a = addVert(j, i)
+        const d = addVert(j + 1, i + 1)
+        const c = addVert(j + 1, i)
+        indices.push(a, d, c)
+      }
+    }
+  }
+
+  return { positions, indices }
+}
+
 const SOLID_MESH_SUBDIVISIONS = 4
 const BOUNDARY_SMOOTH_PASSES = 4
 
@@ -285,6 +351,103 @@ function smoothGrid2D(grid: number[][], passes: number) {
   return current
 }
 
+export function buildOpenLayerGeometryData(
+  topGrid: number[][],
+  bottomGrid: number[][],
+  boxW: number,
+  boxD: number,
+  mScale: number,
+  xGrid?: number[][] | Float32Array[] | any,
+  zGrid?: number[][] | Float32Array[] | any,
+) {
+  topGrid = resampleGridBilinear(topGrid, SOLID_MESH_SUBDIVISIONS)
+  bottomGrid = resampleGridBilinear(bottomGrid, SOLID_MESH_SUBDIVISIONS)
+  xGrid = xGrid ? resampleGridBilinear(xGrid, SOLID_MESH_SUBDIVISIONS) : xGrid
+  zGrid = zGrid ? resampleGridBilinear(zGrid, SOLID_MESH_SUBDIVISIONS) : zGrid
+
+  const Ny = topGrid.length, Nx = topGrid[0].length
+  const EPS = 0.001
+  const xAt = (i: number, j: number) => {
+    if (xGrid && xGrid[j]) return xGrid[j][i]
+    return -boxW / 2 + (boxW * i) / (Nx - 1)
+  }
+  const zAt = (j: number, i: number) => {
+    if (zGrid && zGrid[j]) return zGrid[j][i]
+    return boxD / 2 - (boxD * j) / (Ny - 1)
+  }
+  const thick = (j: number, i: number) => topGrid[j][i] - bottomGrid[j][i]
+
+  const positions: number[] = []
+  const indices: number[] = []
+  const cache = new Map<string, number>()
+  const addVert = (key: string, x: number, y: number, z: number) => {
+    let idx = cache.get(key)
+    if (idx === undefined) {
+      idx = positions.length / 3
+      positions.push(x, y, z)
+      cache.set(key, idx)
+    }
+    return idx
+  }
+  const node = (prefix: "t" | "b", j: number, i: number) => {
+    const y = prefix === "t" ? topGrid[j][i] : bottomGrid[j][i]
+    return addVert(`${prefix}${j}_${i}`, xAt(i, j), y * mScale, zAt(j, i))
+  }
+  const crossNode = (prefix: "t" | "b", ja: number, ia: number, jb: number, ib: number) => {
+    const key = ja < jb || (ja === jb && ia < ib)
+      ? `${prefix}c${ja}_${ia}_${jb}_${ib}`
+      : `${prefix}c${jb}_${ib}_${ja}_${ia}`
+    const ta = thick(ja, ia)
+    const tb = thick(jb, ib)
+    let t = (EPS - ta) / ((tb - ta) || 1e-12)
+    t = Math.max(0, Math.min(1, t))
+    const x = xAt(ia, ja) + (xAt(ib, jb) - xAt(ia, ja)) * t
+    const z = zAt(ja, ia) + (zAt(jb, ib) - zAt(ja, ia)) * t
+    const grid = prefix === "t" ? topGrid : bottomGrid
+    const y = grid[ja][ia] + (grid[jb][ib] - grid[ja][ia]) * t
+    return addVert(key, x, y * mScale, z)
+  }
+  const fan = (poly: number[], reverse: boolean) => {
+    for (let k = 1; k + 1 < poly.length; k++) {
+      const a = poly[0], b = poly[k], c = poly[k + 1]
+      if (a === b || b === c || a === c) continue
+      if (reverse) indices.push(a, c, b)
+      else indices.push(a, b, c)
+    }
+  }
+  for (let j = 0; j < Ny - 1; j++) {
+    for (let i = 0; i < Nx - 1; i++) {
+      const cs: [number, number][] = [[j, i], [j, i + 1], [j + 1, i + 1], [j + 1, i]]
+      const pos = cs.map(([jj, ii]) => thick(jj, ii) > EPS)
+      if (!pos.some(Boolean)) continue
+
+      const polyT: number[] = []
+      const polyB: number[] = []
+      for (let k = 0; k < 4; k++) {
+        const k2 = (k + 1) % 4
+        const [j0, i0] = cs[k]
+        const [j1, i1] = cs[k2]
+        if (pos[k]) {
+          polyT.push(node("t", j0, i0))
+          polyB.push(node("b", j0, i0))
+        }
+        if (pos[k] !== pos[k2]) {
+          const ct = crossNode("t", j0, i0, j1, i1)
+          const cb = crossNode("b", j0, i0, j1, i1)
+          polyT.push(ct)
+          polyB.push(cb)
+        }
+      }
+      if (polyT.length >= 3) {
+        fan(polyT, false)
+        fan(polyB, true)
+      }
+    }
+  }
+
+  return { positions, indices }
+}
+
 export function buildLayerSolidGeometryData(
   topGrid: number[][],
   bottomGrid: number[][],
@@ -293,7 +456,8 @@ export function buildLayerSolidGeometryData(
   mScale: number,
   signedGrid?: number[][] | null,
   xGrid?: number[][] | Float32Array[] | any,
-  zGrid?: number[][] | Float32Array[] | any
+  zGrid?: number[][] | Float32Array[] | any,
+  hardNegativeGrid?: number[][] | null,
 ) {
   // ── [v4.1] 핀치아웃 경계 서브셀 클리핑 (마칭 스퀘어) ─────────────────────
   // 기존: 두께>EPS 꼭짓점이 하나라도 있는 셀을 통째로 렌더 → 경계가 격자 셀
@@ -305,12 +469,22 @@ export function buildLayerSolidGeometryData(
   topGrid = resampleGridBilinear(topGrid, SOLID_MESH_SUBDIVISIONS)
   bottomGrid = resampleGridBilinear(bottomGrid, SOLID_MESH_SUBDIVISIONS)
   signedGrid = signedGrid ? resampleGridBilinear(signedGrid, SOLID_MESH_SUBDIVISIONS) : signedGrid
+  hardNegativeGrid = hardNegativeGrid
+    ? resampleGridBilinear(hardNegativeGrid, SOLID_MESH_SUBDIVISIONS)
+    : hardNegativeGrid
   // [톱니 완화] 경계 윤곽 결정용 부호장. signed가 있으면(핀치아웃 카빙층) 그것을,
   // 없으면(배경암·연속층) 두께장(top−bottom) 자체를 평활해서 쓴다. 기존엔 null일 때
   // 원시 두께로 셀 단위 절단 → 두 지층이 만나는 소멸 경계가 톱니로 보였다. 두께장을
   // 평활하면 0-등고선(소멸 경계)이 유선형 곡선이 되어 매끄럽게 절단된다.
   const thicknessGrid = topGrid.map((row, j) => row.map((_, i) => topGrid[j][i] - bottomGrid[j][i]))
-  const boundaryGrid = smoothGrid2D(signedGrid ?? thicknessGrid, BOUNDARY_SMOOTH_PASSES)
+  let boundaryGrid = smoothGrid2D(signedGrid ?? thicknessGrid, BOUNDARY_SMOOTH_PASSES)
+  // 평활화는 경계 모양만 다듬어야 하며, 실측 무토사공 주변의 하드 코어를
+  // 침식해서는 안 된다. 코어 마스크를 마지막에 다시 적용한다.
+  if (hardNegativeGrid) {
+    boundaryGrid = boundaryGrid.map((row, j) =>
+      row.map((value, i) => hardNegativeGrid![j][i] >= 0.5 ? Math.min(value, -1) : value),
+    )
+  }
   xGrid = xGrid ? resampleGridBilinear(xGrid, SOLID_MESH_SUBDIVISIONS) : xGrid
   zGrid = zGrid ? resampleGridBilinear(zGrid, SOLID_MESH_SUBDIVISIONS) : zGrid
 

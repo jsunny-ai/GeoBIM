@@ -170,6 +170,7 @@ export function DataExportModal({ bbox, projectId, boreholes, initialScope, base
           borehole_ids: [],
           layers: effectiveLayers,
           mode: scope === "new" ? "new_only" : "merge",
+          data_type: "cogo_points",
         }),
       })
 
@@ -268,7 +269,7 @@ export function DataExportModal({ bbox, projectId, boreholes, initialScope, base
       }}>
         <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: `1px solid ${C.border}` }}>
           <div>
-            <div style={{ fontSize: 10, color: C.tertiary }}>Civil 3D · LandXML</div>
+            <div style={{ fontSize: 10, color: C.tertiary }}>Civil 3D · LandXML COGO Points</div>
             <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>데이터 내보내기</h2>
           </div>
           <button onClick={onClose} style={{ marginLeft: "auto", border: 0, background: "transparent", cursor: "pointer", fontSize: 17, color: C.tertiary }}>
@@ -348,7 +349,10 @@ export function DataExportModal({ bbox, projectId, boreholes, initialScope, base
 
           <section style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: C.tertiary, marginBottom: 6 }}>
-              격자 해상도: <strong style={{ color: C.secondary }}>{gridRes} x {gridRes}</strong>
+              보간점 해상도: <strong style={{ color: C.secondary }}>{gridRes} x {gridRes}</strong>
+            </div>
+            <div style={{ fontSize: 10, color: C.tertiary, marginTop: 5 }}>
+              지층당 보간점 {gridRes * gridRes}개 + 해당 지층의 시추공 실측 접촉점
             </div>
             <div style={{ display: "flex", gap: 4 }}>
               {RES_OPTIONS.map((res) => (
@@ -373,7 +377,7 @@ export function DataExportModal({ bbox, projectId, boreholes, initialScope, base
           </section>
 
           <div style={{ padding: "8px 10px", borderRadius: 6, background: C.inner, border: `1px solid ${C.border}`, fontSize: 10, lineHeight: 1.45, color: C.tertiary, marginBottom: 12 }}>
-            현재 3D 뷰어의 시추공 데이터와 최신 보정값을 기준으로 LandXML을 생성합니다.
+            지층별 Point Group에 실측 접촉점과 RBF 보간점을 구분하여 저장합니다.
             현재 표시 모드: {basementMode === "extend" ? "연장" : "미분류 유지"}
           </div>
 
@@ -418,7 +422,7 @@ export function DataExportModal({ bbox, projectId, boreholes, initialScope, base
                 fontWeight: 700,
               }}
             >
-              {exportState === "loading" ? "생성 중..." : exportState === "done" ? "다운로드 완료" : "LandXML 내보내기"}
+              {exportState === "loading" ? "생성 중..." : exportState === "done" ? "다운로드 완료" : "COGO 점 내보내기"}
             </button>
           </div>
         </div>

@@ -121,7 +121,7 @@ function SectionPreview({ layers }: { layers: string[] }) {
         </svg>
       </div>
       <div style={{ fontSize: 10, color: C.tertiary, marginTop: 5, textAlign: "center" }}>
-        강조된 경계면이 LandXML TIN Surface로 내보내집니다
+        강조된 경계면이 지층별 LandXML COGO Point Group으로 내보내집니다
       </div>
     </div>
   )
@@ -276,7 +276,8 @@ export default function ExportPanel({
       }}>
         <div style={{ fontWeight: 600, color: C.secondary, marginBottom: 4 }}>출력 형식</div>
         <div>· LandXML 1.2 (Civil 3D 호환)</div>
-        <div>· TIN Surface — 각 지층 경계면 분리</div>
+        <div>· COGO Points — 각 지층 Point Group 분리</div>
+        <div>· 시추공 실측 접촉점과 RBF 보간점 구분</div>
         <div>· 좌표계: Korea 2000 Central Belt 2010 (EPSG:5186, meter)</div>
         <div>· 파일명: geobim_stratum_YYYYMMDD.xml</div>
       </div>
@@ -305,7 +306,7 @@ export default function ExportPanel({
         {exportState === "loading" ? "⏳ 보간 및 생성 중..." :
          exportState === "done"    ? "✓ 파일 다운로드 완료" :
          exportState === "error"   ? "⚠ 오류 발생 (재시도)" :
-         "📥 Civil 3D용 LandXML 내보내기"}
+         "📥 Civil 3D용 COGO 점 내보내기"}
       </button>
 
       {exportErr && (

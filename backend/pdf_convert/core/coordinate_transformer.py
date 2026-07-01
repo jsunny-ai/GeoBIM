@@ -266,7 +266,13 @@ _validator = SpatialValidator()
 # 4. 怨듦컻 API
 # ===========================================================================
 
-def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
+def normalize_coordinates(
+    x_val,
+    y_val,
+    borehole_id='Unknown',
+    source_crs=None,
+    coordinate_order=None,
+):
     """TM ?먮뒗 WGS84 ?낅젰 醫뚰몴瑜?WGS84(lon, lat)濡??뺢퇋??
 
     Parameters
@@ -310,14 +316,22 @@ def normalize_coordinates(x_val, y_val, borehole_id='Unknown', source_crs=None):
     elif source_crs in _GRS80_EPSG:
         params = _PRESETS[source_crs]
         try:
-            lon_wgs84, lat_wgs84 = _best_grs80_candidate(x, y, params)
+            if coordinate_order == 'easting_northing':
+                lat_wgs84, lon_wgs84 = tm_to_latlon(y, x, params)
+            else:
+                lon_wgs84, lat_wgs84 = _best_grs80_candidate(x, y, params)
         except Exception as e:
             logger.error(f'[GRS80 蹂???ㅽ뙣: {borehole_id}] {e}')
 
     # --- Bessel TM ??WGS84 (pyproj Helmert 蹂?? ---
     elif source_crs in _BESSEL_EPSG:
         try:
-            if _pyproj_ok:
+            if coordinate_order == 'easting_northing' and _pyproj_ok:
+                lon_wgs84, lat_wgs84 = _bessel_transformers[source_crs].transform(x, y)
+            elif coordinate_order == 'easting_northing':
+                lat_bessel, lon_bessel = tm_to_latlon(y, x, _PRESETS[source_crs])
+                lon_wgs84, lat_wgs84 = _bessel_to_wgs84(lon_bessel, lat_bessel)
+            elif _pyproj_ok:
                 lon_wgs84, lat_wgs84 = _best_pyproj_candidate(x, y, _bessel_transformers[source_crs])
             else:
                 lon_wgs84, lat_wgs84 = _best_bessel_candidate(x, y, _PRESETS[source_crs])

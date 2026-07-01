@@ -21,6 +21,7 @@ from app.api.v1.boreholes import _borehole_dict
 from app.models import Borehole, User
 from app.services.borehole_dxf import boreholes_to_dxf
 from app.services.landxml_export import grid_to_landxml
+from app.services.landxml_point_export import grids_to_cgpoints_landxml
 from app.services.phantom_points import generate_phantom_points
 from app.services.rbf_interpolation import GeologicalRBF, merge_nearby_boreholes
 
@@ -46,6 +47,7 @@ class LandXMLExportRequest(BaseModel):
     borehole_ids: list[int] | None = None
     layers: list[str] = Field(default_factory=lambda: DEFAULT_LAYERS.copy())
     mode: Literal["merge", "new_only"] = "merge"
+    data_type: Literal["cogo_points", "tin_surface"] = "cogo_points"
 
     @field_validator("bbox")
     @classmethod
@@ -217,10 +219,12 @@ async def export_landxml(
     _current_user: User = Depends(get_current_user),
 ):
     """
-    RBF 보간 결과를 Civil 3D 호환 LandXML 1.2 TIN Surface 파일로 내보냅니다.
+    RBF 보간 결과를 Civil 3D 호환 LandXML 1.2 파일로 내보냅니다.
 
     - mode="merge"    : DB 기존 시추공 + body.boreholes 신규 시추공 합산 보간
     - mode="new_only" : body.boreholes 신규 시추공만으로 독립 보간
+    - data_type="cogo_points": 지층별 COGO Point Group(기본)
+    - data_type="tin_surface": 기존 TIN Surface
     """
     valid_layers = [l for l in body.layers if l in AVAILABLE_LAYERS]
     if not valid_layers:
@@ -238,6 +242,8 @@ async def export_landxml(
     # 근접/중복 시추공(같은 부지 다중 로그·재시추)을 먼저 병합한다.
     # 좌표가 cm 단위로 겹친 채 보간에 들어가면 RBF 행렬이 특이해져
     # 격자 Z가 전역 발산하므로, 팬텀 생성·보간 이전에 반드시 수행한다.
+    # COGO 출력에는 팬텀이나 병합 전 원본이 아닌, 정제된 실측 접촉점을 기록한다.
+    observed_bhs = list(all_bhs)
     all_bhs = merge_nearby_boreholes(all_bhs, threshold_m=2.0)
 
     phantom_bhs = generate_phantom_points(all_bhs, scale=1.8, count=12)
@@ -271,17 +277,25 @@ async def export_landxml(
 
     # ── 3. LandXML 생성 ──────────────────────────────────────────────────────
     try:
-        xml_content = grid_to_landxml(
-            bbox=body.bbox,
-            grids=grid_result["grids"],
-            layers=exportable_layers,
-            date_str=date.today().isoformat(),
-            time_str=datetime.now().strftime("%H:%M:%S"),
-        )
+        common_args = {
+            "bbox": body.bbox,
+            "grids": grid_result["grids"],
+            "layers": exportable_layers,
+            "date_str": date.today().isoformat(),
+            "time_str": datetime.now().strftime("%H:%M:%S"),
+        }
+        if body.data_type == "cogo_points":
+            xml_content = grids_to_cgpoints_landxml(
+                **common_args,
+                boreholes=observed_bhs,
+            )
+        else:
+            xml_content = grid_to_landxml(**common_args)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    filename = f"geobim_stratum_{date.today().strftime('%Y%m%d')}.xml"
+    suffix = "points" if body.data_type == "cogo_points" else "surfaces"
+    filename = f"geobim_stratum_{suffix}_{date.today().strftime('%Y%m%d')}.xml"
 
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     if excluded_layers:

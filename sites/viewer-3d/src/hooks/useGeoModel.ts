@@ -28,25 +28,71 @@ export interface GeoModelSettings {
   basementMode: "extend" | "unknown"
   selectedBh: string | null
   setSelectedBh: (id: string | null) => void
+  pickMode?: "normal" | "virtual-copy" | "section"
+  onBoreholePick?: (id: string) => void
   setStatus: (msg: string) => void
   bhPosRef: RefObject<Record<string, { x: number; y: number; z: number }>>
 }
 
 const LAYER_STACK = ["soil", "weathered_rock", "soft_rock", "normal_rock", "hard_rock", "unknown"]
+const stripExtSuffix = (type: string) =>
+  type.endsWith("@ext") ? type.slice(0, -4) : type
 
 // [v4] 표시 규칙 — 미분류 구간 처리 세그먼트 토글:
 //   연장 모드("extend")   → "@ext" 메쉬 5개만 표시 (연장분이 흡수된 단일 솔리드)
 //   미분류 유지("unknown") → 관측 메쉬 5개 + 미분류 회색 솔리드 표시
 const layerVisible = (type: string, vis: Record<string, boolean>, mode: "extend" | "unknown") => {
   const isExt = type.endsWith("@ext")
-  const base = isExt ? type.slice(0, -4) : type
+  const base = stripExtSuffix(type)
   if (mode === "extend") return isExt && (vis[base] ?? true)
-  return !isExt && (vis[type] ?? true)
+  return !isExt && (vis[base] ?? true)
 }
 const LAYER_SETS: Record<GeoModelSettings["basemap"], string[]> = {
   Base: ["Base"],
   Satellite: ["Satellite"],
   Hybrid: ["Satellite", "Hybrid"],
+}
+
+function buildBoreholeLabel(text: string, isVirtual: boolean, unit: number) {
+  const fontSize = 30
+  const paddingX = 16
+  const paddingY = 9
+  const canvas = document.createElement("canvas")
+  const context = canvas.getContext("2d")!
+  context.font = `700 ${fontSize}px "Noto Sans KR", sans-serif`
+  const measured = Math.ceil(context.measureText(text).width)
+  canvas.width = measured + paddingX * 2
+  canvas.height = fontSize + paddingY * 2
+
+  context.font = `700 ${fontSize}px "Noto Sans KR", sans-serif`
+  context.fillStyle = isVirtual ? "rgba(91,33,182,.94)" : "rgba(255,255,255,.94)"
+  context.strokeStyle = isVirtual ? "rgba(233,213,255,1)" : "rgba(68,64,60,.9)"
+  context.lineWidth = 3
+  context.beginPath()
+  context.roundRect(1.5, 1.5, canvas.width - 3, canvas.height - 3, 9)
+  context.fill()
+  context.stroke()
+  context.fillStyle = isVirtual ? "#ffffff" : "#1c1917"
+  context.textAlign = "center"
+  context.textBaseline = "middle"
+  context.fillText(text, canvas.width / 2, canvas.height / 2 + 1)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.minFilter = THREE.LinearFilter
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  })
+  const sprite = new THREE.Sprite(material)
+  // 전체 사업영역을 한 화면에 담은 기본 시점에서도 공명이 읽히도록
+  // 시추공 기둥 반경보다 충분히 큰 비율을 사용한다.
+  const height = unit * 6.5
+  sprite.scale.set(height * (canvas.width / canvas.height), height, 1)
+  sprite.renderOrder = 1002
+  return sprite
 }
 
 export function useGeoModel(
@@ -83,6 +129,8 @@ export function useGeoModel(
     basementMode,
     selectedBh,
     setSelectedBh,
+    pickMode = "normal",
+    onBoreholePick,
     setStatus,
     bhPosRef,
   } = settings
@@ -262,6 +310,8 @@ export function useGeoModel(
 
       const {
         elevGrid,
+        gx,
+        gy,
         smoothMeshData,
         voxelCells,
         dz,
@@ -273,7 +323,14 @@ export function useGeoModel(
         diag,
       } = msg
 
-      const drapeGeo = buildSurfaceMesh(elevGrid, boxW, boxD, mScale)
+      const xGrid = Array.from({ length: gy.length }, (_, j) =>
+        Array.from({ length: gx.length }, (__, i) => projection.lngLatToModel(gx[i], gy[j]).x),
+      )
+      const zGrid = Array.from({ length: gy.length }, (_, j) =>
+        Array.from({ length: gx.length }, (__, i) => projection.lngLatToModel(gx[i], gy[j]).z),
+      )
+
+      const drapeGeo = buildSurfaceMesh(elevGrid, boxW, boxD, mScale, xGrid, zGrid)
       const drapeMat = new THREE.MeshBasicMaterial({
         color: 0x4e6e58,
         side: THREE.DoubleSide,
@@ -328,7 +385,7 @@ export function useGeoModel(
 
         // 지층 퇴적 순서(s)에 따라 계단식 polygonOffset을 부여하여 겹치는 구역의 Z-Fighting을 원천 차단
         // "@ext" = 연장 모드 메쉬 — 연장분이 유효 두께에 흡수된 동일 지층이므로 관측 메쉬와 동일 재질
-        const baseType = type.endsWith("@ext") ? type.slice(0, -4) : type
+        const baseType = stripExtSuffix(type)
         const s = LAYER_STACK.indexOf(baseType as any)
         const baseOpacity = 1.0
         const mat = new THREE.MeshStandardMaterial({
@@ -354,7 +411,7 @@ export function useGeoModel(
       for (const type of Object.keys(voxelCells)) {
         const cells = voxelCells[type]
         if (!cells?.length) continue
-        const baseType = type.endsWith("@ext") ? type.slice(0, -4) : type
+        const baseType = stripExtSuffix(type)
         const mat = new THREE.MeshStandardMaterial({
           color: LAYER_COLOR[baseType] ?? LAYER_COLOR.unknown,
           roughness: 0.92,
@@ -373,75 +430,156 @@ export function useGeoModel(
           mesh.visible = activeMode && layerVisible(type, visibilityRef.current, basementModeRef.current)
         }
       }
+      const applyColumnVis = () => {
+        const columnsVisible = showColumnsRef.current
+        for (const child of bhGroupRef.current?.children ?? []) {
+          child.visible = columnsVisible
+        }
+      }
       applyVis(smoothMeshes, renderModeRef.current === "smooth")
       applyVis(voxelMeshes, renderModeRef.current === "voxel")
 
-      const colRadius = Math.max(boxW, boxD) * 0.003
+      const axisSegment = (axis: number[], value: number) => {
+        const n = axis.length
+        if (n < 2) return { i0: 0, t: 0 }
+        if (value <= axis[0]) return { i0: 0, t: 0 }
+        if (value >= axis[n - 1]) return { i0: n - 2, t: 1 }
+        let lo = 0
+        let hi = n - 1
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1
+          if (axis[mid] <= value) lo = mid
+          else hi = mid
+        }
+        const denom = axis[lo + 1] - axis[lo]
+        return { i0: lo, t: denom === 0 ? 0 : Math.max(0, Math.min(1, (value - axis[lo]) / denom)) }
+      }
+      const sampleElevGrid = (lng: number, lat: number) => {
+        const sx = axisSegment(gx, lng)
+        const sy = axisSegment(gy, lat)
+        const i0 = sx.i0
+        const j0 = sy.i0
+        const s = sx.t
+        const t = sy.t
+        const elev00 = elevGrid[j0][i0]
+        const elev10 = elevGrid[j0][i0 + 1]
+        const elev01 = elevGrid[j0 + 1][i0]
+        const elev11 = elevGrid[j0 + 1][i0 + 1]
+        return (1 - s) * (1 - t) * elev00 + s * (1 - t) * elev10 + (1 - s) * t * elev01 + s * t * elev11
+      }
+
+      const colRadius = Math.max(boxW, boxD) * 0.002
+      const contactRingRadius = colRadius * 1.35
+      const contactRingTube = Math.max(colRadius * 0.08, 0.0007)
       const bhGroup = new THREE.Group()
       const posMap: Record<string, { x: number; y: number; z: number }> = {}
       for (const b of boreholes) {
         if (!Number.isFinite(b.longitude) || !Number.isFinite(b.latitude) || !Number.isFinite(b.elevation)) continue
+        const isVirtual = Boolean((b as any).is_virtual)
         const bx = lngToX(b.longitude, b.latitude)
         const bz = latToZ(b.longitude, b.latitude)
 
         // 쌍선형 보간(Bilinear Interpolation)을 통해 시추공 위치의 정밀 지표면 고도(surfElev) 계산
-        const [minLng, minLat, maxLng, maxLat] = bbox
-        const pctLng = (b.longitude - minLng) / (maxLng - minLng)
-        const pctLat = (b.latitude - minLat) / (maxLat - minLat)
-        
-        const fi = pctLng * (N - 1)
-        const fj = pctLat * (N - 1)
-        
-        const i0 = Math.max(0, Math.min(N - 1, Math.floor(fi)))
-        const i1 = Math.max(0, Math.min(N - 1, Math.ceil(fi)))
-        const j0 = Math.max(0, Math.min(N - 1, Math.floor(fj)))
-        const j1 = Math.max(0, Math.min(N - 1, Math.ceil(fj)))
-        
-        const s = fi - i0
-        const t = fj - j0
-        
-        const elev00 = elevGrid[j0][i0]
-        const elev10 = elevGrid[j0][i1]
-        const elev01 = elevGrid[j1][i0]
-        const elev11 = elevGrid[j1][i1]
-        
-        const surfElev = (1 - s) * (1 - t) * elev00 + s * (1 - t) * elev10 + (1 - s) * t * elev01 + s * t * elev11
+        const surfElev = sampleElevGrid(b.longitude, b.latitude)
+        const surfaceY = surfElev * mScale
 
         posMap[b.id] = { x: bx, y: surfElev * mScale * verticalExagRef.current, z: bz }
 
+        // 표면 지도는 지표보다 약간 위에 렌더링되므로 시추공 상단과 이름을
+        // depth test에서 제외한 오버레이 마커로 표시한다.
+        const markerColor = isVirtual ? 0x7c3aed : 0xb91c1c
+        const topMarker = new THREE.Mesh(
+          new THREE.SphereGeometry(colRadius * 1.15, 12, 8),
+          new THREE.MeshBasicMaterial({
+            color: markerColor,
+            depthTest: false,
+            depthWrite: false,
+          }),
+        )
+        topMarker.position.set(bx, surfaceY + colRadius * 1.25, bz)
+        topMarker.renderOrder = 1001
+        topMarker.userData.bhId = b.id
+        topMarker.userData.isBoreholeOverlay = true
+        topMarker.userData.isBoreholeTopMarker = true
+        topMarker.userData.baseColor = markerColor
+        bhGroup.add(topMarker)
+
+        const displayName = String((b as any).name || b.id).replace(/^◆\s*/, "")
+        const label = buildBoreholeLabel(displayName, isVirtual, colRadius)
+        label.position.set(bx, surfaceY + colRadius * 5.4, bz)
+        label.userData.bhId = b.id
+        label.userData.isBoreholeOverlay = true
+        label.userData.isBoreholeLabel = true
+        bhGroup.add(label)
+
+        const contactRings: Array<{ y: number; layerType: string; color: number }> = []
+        let minY = Number.POSITIVE_INFINITY
+        let maxY = Number.NEGATIVE_INFINITY
         for (const seg of b.strata || []) {
           if (!Number.isFinite(seg.depth_top) || !Number.isFinite(seg.depth_bottom)) continue
           const yTop = (surfElev - seg.depth_top) * mScale
           const yBot = (surfElev - seg.depth_bottom) * mScale
+          minY = Math.min(minY, yTop, yBot)
+          maxY = Math.max(maxY, yTop, yBot)
           const h = Math.max(yTop - yBot, 1e-5)
           const geo = new THREE.CylinderGeometry(colRadius, colRadius, h, 10)
           const layerType = seg.strata_group ?? "unknown"
           const mat = new THREE.MeshStandardMaterial({
             color: LAYER_COLOR[layerType] ?? LAYER_COLOR.unknown,
+            emissive: isVirtual ? 0x6d28d9 : 0x000000,
+            emissiveIntensity: isVirtual ? 0.45 : 0,
             roughness: 0.7,
+            transparent: true,
+            opacity: 0.78,
+            depthWrite: false,
           })
           const cyl = new THREE.Mesh(geo, mat)
           cyl.position.set(bx, (yTop + yBot) / 2, bz)
           cyl.userData.layerType = layerType
+          contactRings.push({ y: yTop, layerType, color: isVirtual ? 0x7c3aed : LAYER_COLOR[layerType] ?? LAYER_COLOR.unknown })
+          contactRings.push({ y: yBot, layerType, color: isVirtual ? 0x7c3aed : LAYER_COLOR[layerType] ?? LAYER_COLOR.unknown })
           cyl.userData.bhId = b.id  // 클릭 감지용 시추공 ID 저장
           bhGroup.add(cyl)
+        }
+        const ringKey = new Set<string>()
+        for (const ring of contactRings) {
+          const key = `${ring.layerType}:${ring.y.toFixed(7)}`
+          if (ringKey.has(key)) continue
+          ringKey.add(key)
+          const ringGeo = new THREE.TorusGeometry(contactRingRadius, contactRingTube, 6, 24)
+          const ringMat = new THREE.MeshBasicMaterial({
+            color: ring.color,
+            transparent: true,
+            opacity: 1,
+            depthWrite: false,
+          })
+          const markerRing = new THREE.Mesh(ringGeo, ringMat)
+          markerRing.rotation.x = Math.PI / 2
+          markerRing.position.set(bx, ring.y, bz)
+          markerRing.userData.layerType = ring.layerType
+          markerRing.userData.bhId = b.id
+          bhGroup.add(markerRing)
         }
       }
       bhGroup.visible = showColumnsRef.current
       stratumGroup.add(bhGroup)
       bhGroupRef.current = bhGroup
+      applyColumnVis()
 
       bhPosRef.current = posMap
       fitCamera()
       const LAYER_KO = ["토사", "풍화암", "연암", "보통암", "경암"]
+      const soilAbsenceCenters = diag?.soilAbsenceCenters ?? []
+      const soilAbsenceInside = soilAbsenceCenters.filter((item: any) => item.inside).length
       const diagStr = diag
         ? ` · [진단] 최심관측 토${diag.bhByDeepest[0]}/풍${diag.bhByDeepest[1]}/연${diag.bhByDeepest[2]}/보${diag.bhByDeepest[3]}/경${diag.bhByDeepest[4]}` +
-          ` · 배경암 ${LAYER_KO[diag.bgRank] ?? "-"} · 바닥점유 토${diag.bottomFill[0]}/풍${diag.bottomFill[1]}/연${diag.bottomFill[2]}/보${diag.bottomFill[3]}/경${diag.bottomFill[4]}` +
+          ` · 연장점유 토${diag.bottomFill[0]}/풍${diag.bottomFill[1]}/연${diag.bottomFill[2]}/보${diag.bottomFill[3]}/경${diag.bottomFill[4]}` +
           ` · 최대경사 ${diag.maxSlope} m/m(${LAYER_KO[diag.maxSlopeLayer] ?? "-"})` +
-          ` · 시추공경계오차 최대 ${diag.boundarySnap?.maxAbsError ?? 0}m`
+          ` · 시추공경계오차 최대 ${diag.boundarySnap?.maxAbsError ?? 0}m` +
+          ` · 무토사중심 ${soilAbsenceInside}/${soilAbsenceCenters.length} 내부`
         : ""
       setStatus(
-        `완료 · 시추공 ${boreholes.length}개 · 격자 ${N}x${N}x${MZ} (dz ${dz.toFixed(1)}m) · ` +
+        `완료 · 시추공 ${boreholes.length}개 · 격자 ${gx.length}x${gy.length}x${MZ} (dz ${dz.toFixed(1)}m) · ` +
           `유효 반경 ${confRadiusM.toFixed(0)}m · 영역 ${resultLngWidthM.toFixed(0)}m x ${resultLatWidthM.toFixed(0)}m` +
           (skippedDeep > 0 ? ` · ⚠️ 심도 이상 ${skippedDeep}공 보간 제외 — 확인 필요` : "") +
           diagStr,
@@ -473,7 +611,7 @@ export function useGeoModel(
     if (bhGroup) {
       bhGroup.visible = showColumns
       for (const child of bhGroup.children) {
-        child.visible = true
+        child.visible = showColumns
       }
     }
 
@@ -497,6 +635,14 @@ export function useGeoModel(
   }, [showColumns])
 
   useEffect(() => {
+    if (pickMode !== "virtual-copy") return
+    const bhGroup = bhGroupRef.current
+    if (!bhGroup) return
+    bhGroup.visible = true
+    for (const child of bhGroup.children) child.visible = true
+  }, [pickMode])
+
+  useEffect(() => {
     if (stratumGroupRef.current) {
       stratumGroupRef.current.scale.set(1, verticalExag, 1)
     }
@@ -505,6 +651,15 @@ export function useGeoModel(
   useEffect(() => {
     const marker = markerRef.current
     if (!marker || !bbox) return
+
+    // 선택된 원본 시추공의 공명 박스를 강조하고 선택 해제 시 복원한다.
+    for (const child of bhGroupRef.current?.children ?? []) {
+      if (!child.userData.isBoreholeLabel) continue
+      const material = (child as THREE.Sprite).material as THREE.SpriteMaterial
+      const isSelected = selectedBh !== null && String(child.userData.bhId) === String(selectedBh)
+      material.color.setHex(isSelected ? 0xffc928 : 0xffffff)
+      material.needsUpdate = true
+    }
 
     // ── 지층 투명도: 선택 시 0.25, 해제 시 불투명 복원 ──────────────────
     const allLayerMeshes = [
@@ -583,16 +738,72 @@ export function useGeoModel(
 
     const raycaster = new THREE.Raycaster()
     let clickStart = { x: 0, y: 0 }
+    let lastPointerUpAt = 0
+    let hoveredId: string | null = null
+
+    const applyHover = (nextId: string | null) => {
+      hoveredId = nextId
+      for (const child of bhGroupRef.current?.children ?? []) {
+        const id = String(child.userData.bhId ?? "")
+        const isHovered = nextId !== null && id === nextId
+        const isSelected = selectedBh !== null && id === String(selectedBh)
+        if (child.userData.isBoreholeLabel) {
+          const material = (child as THREE.Sprite).material as THREE.SpriteMaterial
+          material.color.setHex(isSelected ? 0xffc928 : isHovered ? 0x67e8f9 : 0xffffff)
+          material.needsUpdate = true
+        } else if (child.userData.isBoreholeTopMarker) {
+          const material = (child as THREE.Mesh).material as THREE.MeshBasicMaterial
+          material.color.setHex(isHovered ? 0x06b6d4 : child.userData.baseColor)
+          material.needsUpdate = true
+        }
+      }
+      container.style.cursor = nextId ? "pointer" : ""
+    }
+
+    const resolveHoverId = (e: PointerEvent) => {
+      if (e.buttons !== 0) return null
+      const cam = cameraRef.current
+      const bhGroup = bhGroupRef.current
+      if (!cam || !bhGroup || !bhGroup.visible) return null
+      const rect = container.getBoundingClientRect()
+      const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(new THREE.Vector2(x, y), cam)
+      const directHit = raycaster.intersectObjects(bhGroup.children, false)
+        .find((hit: THREE.Intersection) => hit.object.userData.bhId)
+      if (directHit) return String(directHit.object.userData.bhId)
+
+      const world = new THREE.Vector3()
+      const projected = new THREE.Vector3()
+      let nearestId: string | null = null
+      const hoverRadius = pickMode === "virtual-copy" ? 48 : 28
+      let nearestDistanceSq = hoverRadius * hoverRadius
+      for (const child of bhGroup.children) {
+        if (!child.userData.isBoreholeLabel || !child.visible) continue
+        child.getWorldPosition(world)
+        projected.copy(world).project(cam)
+        if (projected.z < -1 || projected.z > 1) continue
+        const screenX = rect.left + (projected.x + 1) * rect.width / 2
+        const screenY = rect.top + (1 - projected.y) * rect.height / 2
+        const distanceSq = (e.clientX - screenX) ** 2 + (e.clientY - screenY) ** 2
+        if (distanceSq < nearestDistanceSq) {
+          nearestDistanceSq = distanceSq
+          nearestId = String(child.userData.bhId)
+        }
+      }
+      return nearestId
+    }
 
     const onPointerDown = (e: PointerEvent) => {
       clickStart = { x: e.clientX, y: e.clientY }
     }
 
-    const onClick = (e: MouseEvent) => {
-      // 3px 이상 이동했으면 드래그로 간주 → 클릭 무시
+    const handleSelection = (e: MouseEvent) => {
+      if (pickMode === "section") return
+      // 미세한 손떨림은 클릭으로 인정하고, 명확한 드래그만 무시한다.
       const dx = e.clientX - clickStart.x
       const dy = e.clientY - clickStart.y
-      if (dx * dx + dy * dy > 9) return
+      if (dx * dx + dy * dy > 36) return
 
       const cam = cameraRef.current
       const bhGroup = bhGroupRef.current
@@ -604,30 +815,129 @@ export function useGeoModel(
 
       raycaster.setFromCamera(new THREE.Vector2(x, y), cam)
 
-      // bhGroup의 자식(실린더)만 대상으로 교차 검사
-      const hits = raycaster.intersectObjects(bhGroup.children, false)
-      if (hits.length > 0) {
-        // userData.bhId는 b.id에서 복사 — 런타임에 string일 수 있음
-        // Number() 변환으로 "10619"(string) → 10619(number) 처리
-        const bhIdRaw = hits[0].object.userData.bhId
-        const bhId = String(bhIdRaw)
-        if (bhId) focusBorehole(bhId)
-      } else {
-        // 빈 공간 클릭 → 선택 해제 (지층 투명도 복원)
+      const selectBorehole = (rawId: unknown) => {
+        const bhId = String(rawId ?? "")
+        if (!bhId) return false
+        if (pickMode === "virtual-copy" && onBoreholePick) {
+          onBoreholePick(bhId)
+        } else {
+          focusBorehole(bhId)
+        }
+        return true
+      }
+
+      // 사용자가 색상으로 확인한 호버 대상과 클릭 결과를 항상 일치시킨다.
+      if (hoveredId && selectBorehole(hoveredId)) return
+
+      sceneRef.current?.updateMatrixWorld(true)
+      cam.updateMatrixWorld(true)
+
+      const toScreen = (point: THREE.Vector3) => {
+        const projected = point.clone().project(cam)
+        return {
+          x: rect.left + (projected.x + 1) * rect.width / 2,
+          y: rect.top + (1 - projected.y) * rect.height / 2,
+          z: projected.z,
+        }
+      }
+      const labelCandidates: Array<{ id: unknown; distanceSq: number; z: number }> = []
+      const nearestCandidates: Array<{ id: unknown; distanceSq: number; z: number }> = []
+      const center = new THREE.Vector3()
+      const scale = new THREE.Vector3()
+      const cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion)
+      const cameraUp = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion)
+
+      for (const child of bhGroup.children) {
+        if (!child.userData.isBoreholeLabel || !child.visible) continue
+        child.getWorldPosition(center)
+        child.getWorldScale(scale)
+        const centerScreen = toScreen(center)
+        if (centerScreen.z < -1 || centerScreen.z > 1) continue
+
+        const halfRight = cameraRight.clone().multiplyScalar(scale.x / 2)
+        const halfUp = cameraUp.clone().multiplyScalar(scale.y / 2)
+        const corners = [
+          toScreen(center.clone().add(halfRight).add(halfUp)),
+          toScreen(center.clone().add(halfRight).sub(halfUp)),
+          toScreen(center.clone().sub(halfRight).add(halfUp)),
+          toScreen(center.clone().sub(halfRight).sub(halfUp)),
+        ]
+        const minX = Math.min(...corners.map((point) => point.x)) - 5
+        const maxX = Math.max(...corners.map((point) => point.x)) + 5
+        const minY = Math.min(...corners.map((point) => point.y)) - 5
+        const maxY = Math.max(...corners.map((point) => point.y)) + 5
+        const distanceSq = (e.clientX - centerScreen.x) ** 2 + (e.clientY - centerScreen.y) ** 2
+        const candidate = { id: child.userData.bhId, distanceSq, z: centerScreen.z }
+        nearestCandidates.push(candidate)
+        if (e.clientX >= minX && e.clientX <= maxX && e.clientY >= minY && e.clientY <= maxY) {
+          labelCandidates.push(candidate)
+        }
+      }
+
+      // 공명 박스 내부 후보를 가장 먼저 선택한다. 겹친 경우 클릭점에 더
+      // 가까운 라벨, 거리가 같으면 카메라에 가까운 라벨을 우선한다.
+      labelCandidates.sort((a, b) => a.distanceSq - b.distanceSq || a.z - b.z)
+      if (labelCandidates.length > 0 && selectBorehole(labelCandidates[0].id)) return
+
+      // 라벨 외에는 상단 마커와 시추공 기둥의 실제 교차만 인정한다.
+      const hits = raycaster.intersectObjects(
+        bhGroup.children.filter((child: THREE.Object3D) => !child.userData.isBoreholeLabel),
+        false,
+      )
+      if (hits.length > 0 && selectBorehole(hits[0].object.userData.bhId)) return
+
+      // 마지막 보조 판정은 최대 28px까지만 허용한다.
+      nearestCandidates.sort((a, b) => a.distanceSq - b.distanceSq || a.z - b.z)
+      const nearest = nearestCandidates[0]
+      if (nearest && nearest.distanceSq <= 28 * 28 && selectBorehole(nearest.id)) return
+
+      if (pickMode !== "virtual-copy") {
+        // 빈 공간 클릭 → 일반 선택만 해제한다. 복사 모드는 계속 유지한다.
         setSelectedBh(null)
       }
     }
 
-    container.addEventListener("pointerdown", onPointerDown)
-    container.addEventListener("click", onClick)
-    return () => {
-      container.removeEventListener("pointerdown", onPointerDown)
-      container.removeEventListener("click", onClick)
+    const onPointerUp = (e: PointerEvent) => {
+      lastPointerUpAt = Date.now()
+      handleSelection(e)
     }
-  }, [containerRef, cameraRef, focusBorehole, setSelectedBh])
+    const onClick = (e: MouseEvent) => {
+      // 일부 브라우저/입력장치는 pointerup 대신 click만 안정적으로 전달한다.
+      if (Date.now() - lastPointerUpAt > 200) {
+        clickStart = { x: e.clientX, y: e.clientY }
+        handleSelection(e)
+      }
+    }
+    const onPointerMove = (e: PointerEvent) => {
+      if (pickMode !== "virtual-copy") return
+      const nextId = resolveHoverId(e)
+      if (nextId !== hoveredId) applyHover(nextId)
+    }
+    const onPointerLeave = () => applyHover(null)
+
+    container.addEventListener("pointerdown", onPointerDown, true)
+    container.addEventListener("pointerup", onPointerUp, true)
+    container.addEventListener("pointermove", onPointerMove, true)
+    container.addEventListener("pointerleave", onPointerLeave, true)
+    container.addEventListener("click", onClick, true)
+    return () => {
+      applyHover(null)
+      container.removeEventListener("pointerdown", onPointerDown, true)
+      container.removeEventListener("pointerup", onPointerUp, true)
+      container.removeEventListener("pointermove", onPointerMove, true)
+      container.removeEventListener("pointerleave", onPointerLeave, true)
+      container.removeEventListener("click", onClick, true)
+    }
+  }, [containerRef, cameraRef, focusBorehole, onBoreholePick, pickMode, setSelectedBh])
 
   return {
     focusBorehole,
     dimsRef,
+    smoothMeshRef,
+    voxelMeshRef,
+    drapeRef,
+    bhGroupRef,
+    markerRef,
+    stratumGroupRef,
   }
 }

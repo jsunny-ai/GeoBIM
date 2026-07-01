@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { fetchBoreholesByBbox } from "@/lib/parseUrl"
-import type { Borehole } from "@/lib/types"
+import type { Borehole, VirtualBorehole } from "@/lib/types"
 import { buildElevationGrid } from "../lib/terrain"
 import { apiUrl } from "@shared/urls"
 
@@ -12,6 +12,7 @@ export function useBoreholeData(
   reloadKey: number = 0, // [v4.2] 수정 저장 후 재조회 트리거
 ) {
   const [boreholes, setBoreholes] = useState<Borehole[]>([])
+  const [virtualBoreholes, setVirtualBoreholes] = useState<VirtualBorehole[]>([])
   const [fetchStatus, setFetchStatus] = useState<"idle" | "loading" | "done" | "error">("idle")
   const [fetchErr, setFetchErr] = useState<string | null>(null)
 
@@ -32,8 +33,17 @@ export function useBoreholeData(
           })
       : fetchBoreholesByBbox(bbox as [number, number, number, number], polygon || undefined, boreholeIds)
 
-    boreholePromise
-      .then(async (bhs) => {
+    const virtualPromise = projectId
+      ? fetch(apiUrl(`/api/v1/projects/${projectId}/virtual-boreholes`))
+          .then(async (res) => {
+            if (!res.ok) return [] as VirtualBorehole[]
+            const data = await res.json()
+            return (data.virtual_boreholes ?? []) as VirtualBorehole[]
+          })
+      : Promise.resolve([] as VirtualBorehole[])
+
+    Promise.all([boreholePromise, virtualPromise])
+      .then(async ([bhs, virtualRows]) => {
         if (cancelled) return
 
         let terrainElevAt: ((lng: number, lat: number) => number) | null = null
@@ -91,6 +101,10 @@ export function useBoreholeData(
         }))
 
         setBoreholes(flagged)
+        setVirtualBoreholes(virtualRows.map((row) => ({
+          ...row,
+          dem_elevation: terrainElevAt ? terrainElevAt(row.longitude, row.latitude) : row.elevation,
+        })))
         setFetchStatus("done")
       })
       .catch((e) => {
@@ -106,6 +120,7 @@ export function useBoreholeData(
 
   return {
     boreholes,
+    virtualBoreholes,
     fetchStatus,
     fetchErr,
   }
@@ -116,14 +131,6 @@ function normalizeBorehole(b: Borehole): Borehole {
     .filter((s) => Number.isFinite(s.depth_top) && Number.isFinite(s.depth_bottom))
     .sort((a, b) => a.depth_top - b.depth_top)
     .map((s) => ({ ...s }))
-
-  for (let i = 0; i < strata.length; i += 1) {
-    const prevBottom = i > 0 ? strata[i - 1].depth_bottom : 0
-    strata[i].depth_top = Math.max(strata[i].depth_top || 0, prevBottom)
-    if (strata[i].depth_bottom <= strata[i].depth_top) {
-      strata[i].depth_bottom = strata[i].depth_top + 0.1
-    }
-  }
 
   return {
     ...b,

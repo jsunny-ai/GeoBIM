@@ -114,6 +114,13 @@ export default function MapPage() {
     finally { setBhLoading(false) }
   }, [])
 
+  const handleBoreholeSaved = useCallback((updated: Borehole) => {
+    setSelectedBorehole(updated)
+    setAllBoreholes((current) =>
+      current.map((item) => item.id === updated.id ? { ...item, ...updated } : item),
+    )
+  }, [])
+
   const { isDrawing, polygon, selectedBoreholes, startDrawing, cancelDrawing, setSelection } =
     useCesiumMap(containerRef, visibleBoreholes, "Base",
       15, 10, 235, "gl", DEFAULT_LAYER_VISIBLE,
@@ -384,6 +391,7 @@ export default function MapPage() {
         <BoreholePanel
           borehole={selectedBorehole}
           loading={bhLoading}
+          onSaved={handleBoreholeSaved}
           onClose={() => setSelectedBorehole(null)}
         />
       )}
@@ -609,10 +617,35 @@ function SaveProjectModal({
   )
 }
 
-function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loading?: boolean; onClose: () => void }) {
+function BoreholePanel({
+  borehole,
+  loading,
+  onSaved,
+  onClose,
+}: {
+  borehole: Borehole
+  loading?: boolean
+  onSaved: (updated: Borehole) => void
+  onClose: () => void
+}) {
+  const [editing, setEditing] = useState(false)
   const sorted = [...(borehole.strata ?? [])].sort((a, b) => a.depth_top - b.depth_top)
   const totalDepth = sorted.length ? Math.max(...sorted.map((s) => s.depth_bottom)) : 0
   const LOG_H = 220 // px
+
+  if (editing) {
+    return (
+      <BoreholeEditPanel
+        borehole={borehole}
+        onCancel={() => setEditing(false)}
+        onClose={onClose}
+        onSaved={(updated) => {
+          onSaved(updated)
+          setEditing(false)
+        }}
+      />
+    )
+  }
 
   return (
     <div style={{
@@ -634,10 +667,17 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
             시추공 정보
           </div>
         </div>
-        <button onClick={onClose} style={{
-          background: "none", border: "none", color: C.tertiary,
-          fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px",
-        }}>×</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={() => setEditing(true)} style={{
+            background: C.btnIdle, border: `1px solid ${C.btnBorder}`,
+            color: C.secondary, borderRadius: 5, fontSize: 11,
+            cursor: "pointer", padding: "4px 8px",
+          }}>편집</button>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: C.tertiary,
+            fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px",
+          }}>×</button>
+        </div>
       </div>
 
       <div style={{ padding: "12px 14px" }}>
@@ -766,6 +806,190 @@ function BoreholePanel({ borehole, loading, onClose }: { borehole: Borehole; loa
             지층 데이터 없음
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+type EditableStratum = {
+  depth_top: string
+  depth_bottom: string
+  soil_type: string
+}
+
+function BoreholeEditPanel({
+  borehole,
+  onSaved,
+  onCancel,
+  onClose,
+}: {
+  borehole: Borehole
+  onSaved: (updated: Borehole) => void
+  onCancel: () => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(borehole.name)
+  const [longitude, setLongitude] = useState(String(borehole.longitude))
+  const [latitude, setLatitude] = useState(String(borehole.latitude))
+  const [elevation, setElevation] = useState(borehole.elevation == null ? "" : String(borehole.elevation))
+  const [strata, setStrata] = useState<EditableStratum[]>(
+    [...(borehole.strata ?? [])]
+      .sort((a, b) => a.depth_top - b.depth_top)
+      .map((item) => ({
+        depth_top: String(item.depth_top),
+        depth_bottom: String(item.depth_bottom),
+        soil_type: item.soil_type,
+      })),
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const fieldStyle: React.CSSProperties = {
+    width: "100%", boxSizing: "border-box", border: `1px solid ${C.border}`,
+    borderRadius: 5, padding: "6px 7px", background: "#fff",
+    color: C.text, fontSize: 11, outline: "none",
+  }
+
+  const updateStratum = (index: number, key: keyof EditableStratum, value: string) => {
+    setStrata((current) => current.map((item, itemIndex) =>
+      itemIndex === index ? { ...item, [key]: value } : item,
+    ))
+  }
+
+  const save = async () => {
+    setError(null)
+    const lon = Number(longitude)
+    const lat = Number(latitude)
+    const elev = elevation.trim() === "" ? null : Number(elevation)
+    if (!name.trim()) return setError("시추공명을 입력하세요.")
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return setError("경도와 위도를 숫자로 입력하세요.")
+    if (lon < 124 || lon > 132 || lat < 33 || lat > 39) return setError("좌표가 한국 영역 범위를 벗어났습니다.")
+    if (elev !== null && !Number.isFinite(elev)) return setError("표고를 숫자로 입력하세요.")
+
+    const normalizedStrata = strata.map((item) => ({
+      depth_top: Number(item.depth_top),
+      depth_bottom: Number(item.depth_bottom),
+      soil_type: item.soil_type.trim(),
+    }))
+    for (const item of normalizedStrata) {
+      if (!Number.isFinite(item.depth_top) || !Number.isFinite(item.depth_bottom)) {
+        return setError("지층 심도를 숫자로 입력하세요.")
+      }
+      if (item.depth_bottom <= item.depth_top) return setError("하심도는 상심도보다 커야 합니다.")
+      if (!item.soil_type) return setError("지층명을 입력하세요.")
+    }
+
+    setSaving(true)
+    try {
+      const baseResponse = await fetch(`/api/v1/boreholes/${borehole.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          longitude: lon,
+          latitude: lat,
+          elevation: elev,
+        }),
+      })
+      if (!baseResponse.ok) throw new Error(await apiErrorMessage(baseResponse, "시추공 정보를 저장하지 못했습니다."))
+
+      const strataResponse = await fetch(`/api/v1/boreholes/${borehole.id}/strata`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(normalizedStrata),
+      })
+      if (!strataResponse.ok) throw new Error(await apiErrorMessage(strataResponse, "지층 정보를 저장하지 못했습니다."))
+
+      const detailResponse = await fetch(`/api/v1/boreholes/${borehole.id}`)
+      if (!detailResponse.ok) throw new Error(await apiErrorMessage(detailResponse, "수정 결과를 불러오지 못했습니다."))
+      onSaved(await detailResponse.json() as Borehole)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "저장 중 오류가 발생했습니다.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{
+      position: "absolute", bottom: 14, right: 14, width: 480, maxHeight: "calc(100vh - 28px)",
+      zIndex: 20, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10,
+      boxShadow: "0 4px 20px rgba(0,0,0,.12)", color: C.text,
+      fontFamily: "'Noto Sans KR',-apple-system,sans-serif", overflow: "hidden",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "10px 14px", borderBottom: `1px solid ${C.border}`,
+        background: "rgba(160,155,148,.15)",
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>시추공 데이터 편집</div>
+        <button onClick={onClose} style={{
+          background: "none", border: "none", color: C.tertiary,
+          fontSize: 18, cursor: "pointer", lineHeight: 1,
+        }}>×</button>
+      </div>
+
+      <div style={{ padding: 14, overflowY: "auto", maxHeight: "calc(100vh - 118px)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <label style={{ gridColumn: "1 / -1", fontSize: 10, color: C.tertiary }}>
+            시추공명
+            <input value={name} onChange={(event) => setName(event.target.value)} style={{ ...fieldStyle, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 10, color: C.tertiary }}>
+            경도
+            <input value={longitude} onChange={(event) => setLongitude(event.target.value)} style={{ ...fieldStyle, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 10, color: C.tertiary }}>
+            위도
+            <input value={latitude} onChange={(event) => setLatitude(event.target.value)} style={{ ...fieldStyle, marginTop: 3 }} />
+          </label>
+          <label style={{ gridColumn: "1 / -1", fontSize: 10, color: C.tertiary }}>
+            표고(m)
+            <input value={elevation} onChange={(event) => setElevation(event.target.value)} style={{ ...fieldStyle, marginTop: 3 }} />
+          </label>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "14px 0 6px" }}>
+          <strong style={{ fontSize: 12 }}>지층 데이터</strong>
+          <button onClick={() => setStrata((current) => [
+            ...current,
+            { depth_top: current.length ? current[current.length - 1].depth_bottom : "0", depth_bottom: "", soil_type: "" },
+          ])} style={{
+            border: `1px solid ${C.btnBorder}`, borderRadius: 5, background: C.btnIdle,
+            color: C.secondary, fontSize: 10, padding: "4px 7px", cursor: "pointer",
+          }}>+ 지층 추가</button>
+        </div>
+
+        <div style={{ display: "grid", gap: 5 }}>
+          {strata.map((item, index) => (
+            <div key={index} style={{ display: "grid", gridTemplateColumns: "72px 72px 1fr 26px", gap: 5 }}>
+              <input aria-label={`지층 ${index + 1} 상심도`} value={item.depth_top}
+                onChange={(event) => updateStratum(index, "depth_top", event.target.value)} style={fieldStyle} />
+              <input aria-label={`지층 ${index + 1} 하심도`} value={item.depth_bottom}
+                onChange={(event) => updateStratum(index, "depth_bottom", event.target.value)} style={fieldStyle} />
+              <input aria-label={`지층 ${index + 1} 지층명`} value={item.soil_type}
+                onChange={(event) => updateStratum(index, "soil_type", event.target.value)} style={fieldStyle} />
+              <button aria-label={`지층 ${index + 1} 삭제`} onClick={() => setStrata((current) => current.filter((_, i) => i !== index))}
+                style={{ border: `1px solid ${C.border}`, borderRadius: 5, background: "#fff", color: C.accent, cursor: "pointer" }}>×</button>
+            </div>
+          ))}
+        </div>
+
+        {error && <div style={{
+          marginTop: 10, padding: "7px 9px", borderRadius: 5,
+          background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", fontSize: 11,
+        }}>{error}</div>}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 7, marginTop: 12 }}>
+          <button onClick={onCancel} disabled={saving} style={{
+            border: `1px solid ${C.border}`, borderRadius: 5, background: "#fff",
+            color: C.secondary, padding: "6px 12px", cursor: "pointer",
+          }}>취소</button>
+          <button onClick={save} disabled={saving} style={{
+            border: `1px solid ${C.btnBorder}`, borderRadius: 5, background: C.btnActive,
+            color: C.text, padding: "6px 14px", cursor: saving ? "wait" : "pointer", fontWeight: 600,
+          }}>{saving ? "저장 중..." : "저장"}</button>
+        </div>
       </div>
     </div>
   )

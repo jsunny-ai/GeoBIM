@@ -6,6 +6,7 @@ import { apiGet } from "./lib/api"
 import { NavBar } from "./components/NavBar"
 import { AutoParseTab } from "./components/AutoParseTab"
 import { ManualParseTab } from "./components/ManualParseTab"
+import { CsvParseTab } from "./components/CsvParseTab"
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("auto")
@@ -14,6 +15,7 @@ export default function App() {
   const [projectError, setProjectError] = useState<string | null>(null)
   const [autoReviewReady, setAutoReviewReady] = useState(false)
   const [manualReviewReady, setManualReviewReady] = useState(false)
+  const [csvReviewReady, setCsvReviewReady] = useState(false)
 
   // URL 파라미터: project_id (잠금), return_url (완료 후 복귀)
   const urlParams = new URLSearchParams(window.location.search)
@@ -72,11 +74,11 @@ export default function App() {
         </div>
       )}
 
-      <main className={cn("mx-auto space-y-6 px-4 py-8", (tab === "auto" && autoReviewReady) || (tab === "manual" && manualReviewReady) ? "max-w-[1600px]" : "max-w-2xl")}>
+      <main className={cn("mx-auto space-y-6 px-4 py-8", (tab === "auto" && autoReviewReady) || (tab === "manual" && manualReviewReady) || (tab === "csv" && csvReviewReady) ? "max-w-[1600px]" : "max-w-2xl")}>
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">PDF 업로드</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">데이터 업로드</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            시추 주상도 문서를 업로드하여 지층 데이터를 추출합니다.
+            시추 주상도 문서(PDF) 또는 시추공 표(CSV/엑셀)를 업로드하여 지층 데이터를 추출합니다.
           </p>
         </div>
 
@@ -101,7 +103,7 @@ export default function App() {
           </div>
         )}
 
-        {tab === "auto" ? (
+        {tab === "auto" && (
           <AutoParseTab
             projects={projects}
             loadingProjects={loadingProjects}
@@ -113,7 +115,8 @@ export default function App() {
             returnUrl={returnUrl}
             onReviewReadyChange={setAutoReviewReady}
           />
-        ) : (
+        )}
+        {tab === "manual" && (
           <ManualParseTab
             projects={projects}
             loadingProjects={loadingProjects}
@@ -124,6 +127,19 @@ export default function App() {
             setFile={setFile}
             returnUrl={returnUrl}
             onReviewReadyChange={setManualReviewReady}
+          />
+        )}
+        {tab === "csv" && (
+          <CsvParseTab
+            projects={projects}
+            loadingProjects={loadingProjects}
+            lockedProjectId={lockedProjectId}
+            projectId={projectId}
+            setProjectId={setProjectId}
+            file={file}
+            setFile={setFile}
+            returnUrl={returnUrl}
+            onReviewReadyChange={setCsvReviewReady}
           />
         )}
       </main>

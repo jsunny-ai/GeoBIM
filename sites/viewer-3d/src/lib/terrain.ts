@@ -153,6 +153,7 @@ export function idwGrid(
 export async function buildElevationGrid(
   bbox: [number, number, number, number],
   N: number,
+  axes?: { gx: number[]; gy: number[] },
 ): Promise<{
   elevGrid: number[][]
   gx: number[]
@@ -211,27 +212,29 @@ export async function buildElevationGrid(
   const clip = (v: number) =>
     !Number.isFinite(v) || v < -30 || v > 2000 ? NaN : v
 
-  const gx = Array.from({ length: N }, (_, i) => minLng + (maxLng - minLng) * i / (N - 1))
-  const gy = Array.from({ length: N }, (_, j) => minLat + (maxLat - minLat) * j / (N - 1))
+  const gx = axes?.gx?.length ? axes.gx : Array.from({ length: N }, (_, i) => minLng + (maxLng - minLng) * i / (N - 1))
+  const gy = axes?.gy?.length ? axes.gy : Array.from({ length: N }, (_, j) => minLat + (maxLat - minLat) * j / (N - 1))
+  const nx = gx.length
+  const ny = gy.length
 
   let grid: number[][] = []
-  for (let j = 0; j < N; j++) {
+  for (let j = 0; j < ny; j++) {
     const row: number[] = []
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < nx; i++) {
       row.push(clip(decodeRaw(pxAt(lngToWorldX(gx[i], zoom)), pyAt(latToWorldY(gy[j], zoom)))))
     }
     grid.push(row)
   }
 
   for (let pass = 0; pass < 3; pass++) {
-    for (let j = 0; j < N; j++)
-      for (let i = 0; i < N; i++) {
+    for (let j = 0; j < ny; j++)
+      for (let i = 0; i < nx; i++) {
         if (Number.isFinite(grid[j][i])) continue
         let s = 0, c = 0
         for (let dj = -1; dj <= 1; dj++)
           for (let di = -1; di <= 1; di++) {
             const nj = j + dj, ni = i + di
-            if (nj >= 0 && nj < N && ni >= 0 && ni < N && Number.isFinite(grid[nj][ni])) {
+            if (nj >= 0 && nj < ny && ni >= 0 && ni < nx && Number.isFinite(grid[nj][ni])) {
               s += grid[nj][ni]; c++
             }
           }
@@ -244,13 +247,13 @@ export async function buildElevationGrid(
   grid = grid.map((row) => row.map((v) => (Number.isFinite(v) ? v : meanElev)))
 
   const smooth = grid.map((r) => r.slice())
-  for (let j = 0; j < N; j++)
-    for (let i = 0; i < N; i++) {
+  for (let j = 0; j < ny; j++)
+    for (let i = 0; i < nx; i++) {
       let s = 0, c = 0
       for (let dj = -1; dj <= 1; dj++)
         for (let di = -1; di <= 1; di++) {
           const nj = j + dj, ni = i + di
-          if (nj >= 0 && nj < N && ni >= 0 && ni < N) { s += grid[nj][ni]; c++ }
+          if (nj >= 0 && nj < ny && ni >= 0 && ni < nx) { s += grid[nj][ni]; c++ }
         }
       smooth[j][i] = s / c
     }

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Loader2, Save } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -20,12 +20,18 @@ type EditablePreviewRow = PreviewRow & {
 function editableRows(rows: PreviewRow[]): EditablePreviewRow[] {
   let groupIndex = 0
   let previousName: string | null = null
+  let previousSourceGroupKey: string | null = null
   return rows.map((row, index) => {
     const name = previewBoreholeName(row, index)
-    if (index === 0 || name !== previousName) {
+    const sourceGroupKey = row.__sourceGroupKey ? String(row.__sourceGroupKey) : null
+    const startsNewGroup = sourceGroupKey
+      ? sourceGroupKey !== previousSourceGroupKey
+      : name !== previousName
+    if (index === 0 || startsNewGroup) {
       groupIndex += 1
-      previousName = name
     }
+    previousName = name
+    previousSourceGroupKey = sourceGroupKey
     return {
       ...row,
       __previewRowId: `${index}-${name}`,
@@ -35,7 +41,7 @@ function editableRows(rows: PreviewRow[]): EditablePreviewRow[] {
 }
 
 function cleanRows(rows: EditablePreviewRow[]): PreviewRow[] {
-  return rows.map(({ __previewRowId, __previewGroupId, ...row }) => row)
+  return rows.map(({ __previewRowId, __previewGroupId, __sourceGroupKey, ...row }) => row)
 }
 
 export function PreviewPanel({
@@ -51,7 +57,14 @@ export function PreviewPanel({
   const [projectName, setProjectName] = useState(
     () => projectNameFromRows(job.result?.rows ?? []) ?? job.result?.project_name ?? "",
   )
-  const [selectedBoreholeName, setSelectedBoreholeName] = useState<string | null>(null)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const rows = job.result?.rows ?? []
+    setEditedRows(editableRows(rows))
+    setProjectName(projectNameFromRows(rows) ?? job.result?.project_name ?? "")
+    setSelectedGroupId(null)
+  }, [job.id, job.result])
 
   const handleProjectNameChange = (value: string) => {
     setProjectName(value)
@@ -83,11 +96,19 @@ export function PreviewPanel({
   }
 
   const handleCellChange = (rowIndex: number, key: keyof PreviewRow, value: string) => {
-    setSelectedBoreholeName(previewBoreholeName(editedRows[rowIndex] ?? {}, rowIndex))
+    setSelectedGroupId(editedRows[rowIndex]?.__previewGroupId ?? null)
     const sourceRowForConversion = { ...(editedRows[rowIndex] ?? {}), [key]: value }
     setEditedRows((prev) => {
       const parsedValue = value
-      const isBoreholeMetaField = ["시추공명", "lon_wgs84", "lat_wgs84", "표고", "meta_crs"].includes(String(key))
+      const isBoreholeMetaField = [
+        "시추공명",
+        "lon_wgs84",
+        "lat_wgs84",
+        "표고",
+        "water_level_gl",
+        "water_level_el",
+        "meta_crs",
+      ].includes(String(key))
       let nextRows = [...prev]
 
       if (isBoreholeMetaField) {
@@ -182,25 +203,27 @@ export function PreviewPanel({
 
       <CoordinatePreviewMap
         rows={editedRows}
-        selectedName={selectedBoreholeName}
-        onSelectPoint={setSelectedBoreholeName}
+        selectedId={selectedGroupId}
+        onSelectPoint={setSelectedGroupId}
       />
 
       <div className="max-h-[360px] overflow-auto rounded-md border border-sky-400/20 bg-background/60">
-        <table className="w-full min-w-[920px] table-fixed text-left text-xs">
+        <table className="w-full min-w-[1120px] table-fixed text-left text-xs">
           <colgroup>
-            <col className="w-[13%]" />
-            <col className="w-[9%]" />
-            <col className="w-[9%]" />
-            <col className="w-[13%]" />
-            <col className="w-[14%]" />
-            <col className="w-[14%]" />
+            <col className="w-[12%]" />
             <col className="w-[8%]" />
-            <col className="w-[20%]" />
+            <col className="w-[8%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+            <col className="w-[9%]" />
+            <col className="w-[9%]" />
+            <col className="w-[8%]" />
+            <col className="w-[10%]" />
           </colgroup>
           <thead className="sticky top-0 bg-card text-muted-foreground">
             <tr>
-              {["시추공", "상심도", "하심도", "지층", "경도", "위도", "표고", "좌표계"].map((header) => (
+              {["시추공", "상심도", "하심도", "지층", "경도", "위도", "지하수위 GL(m)", "지하수위 EL(m)", "표고", "좌표계"].map((header) => (
                 <th key={header} className="border-b border-border px-3 py-2 font-medium whitespace-nowrap">
                   {header}
                 </th>
@@ -210,11 +233,11 @@ export function PreviewPanel({
           <tbody>
             {previewRows.map((row, index) => {
               const boreholeName = previewBoreholeName(row, index)
-              const selected = selectedBoreholeName === boreholeName
+              const selected = selectedGroupId === row.__previewGroupId
               return (
                 <tr
                   key={row.__previewRowId}
-                  onClick={() => setSelectedBoreholeName(boreholeName)}
+                  onClick={() => setSelectedGroupId(row.__previewGroupId)}
                   className={cn(
                     "border-b border-border/60 transition-colors",
                     selected && "bg-sky-500/10",
@@ -224,7 +247,7 @@ export function PreviewPanel({
                     <input
                       type="text"
                       value={row["시추공명"] ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "시추공명", e.target.value)}
                       className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     />
@@ -233,7 +256,7 @@ export function PreviewPanel({
                     <input
                       type="text"
                       value={row["상심도"] ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "상심도", e.target.value)}
                       className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     />
@@ -242,7 +265,7 @@ export function PreviewPanel({
                     <input
                       type="text"
                       value={row["하심도"] ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "하심도", e.target.value)}
                       className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     />
@@ -251,7 +274,7 @@ export function PreviewPanel({
                     <input
                       type="text"
                       value={row["지층명"] ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "지층명", e.target.value)}
                       className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     />
@@ -260,7 +283,7 @@ export function PreviewPanel({
                     <input
                       type="text"
                       value={row.lon_wgs84 ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "lon_wgs84", e.target.value)}
                       className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     />
@@ -269,7 +292,7 @@ export function PreviewPanel({
                     <input
                       type="text"
                       value={row.lat_wgs84 ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "lat_wgs84", e.target.value)}
                       className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     />
@@ -277,8 +300,26 @@ export function PreviewPanel({
                   <td className="px-2 py-1 text-muted-foreground">
                     <input
                       type="text"
+                      value={row.water_level_gl ?? row["지하수위"] ?? ""}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
+                      onChange={(e) => handleCellChange(index, "water_level_gl", e.target.value)}
+                      className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
+                    />
+                  </td>
+                  <td className="px-2 py-1 text-muted-foreground">
+                    <input
+                      type="text"
+                      value={row.water_level_el ?? ""}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
+                      onChange={(e) => handleCellChange(index, "water_level_el", e.target.value)}
+                      className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
+                    />
+                  </td>
+                  <td className="px-2 py-1 text-muted-foreground">
+                    <input
+                      type="text"
                       value={row["표고"] ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "표고", e.target.value)}
                       className="w-full bg-transparent px-1 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     />
@@ -286,7 +327,7 @@ export function PreviewPanel({
                   <td className="px-2 py-1 text-muted-foreground">
                     <select
                       value={row.meta_crs ?? ""}
-                      onFocus={() => setSelectedBoreholeName(boreholeName)}
+                      onFocus={() => setSelectedGroupId(row.__previewGroupId)}
                       onChange={(e) => handleCellChange(index, "meta_crs", e.target.value)}
                       className="w-full bg-transparent pl-1 pr-8 py-0.5 border border-transparent hover:border-input focus:border-sky-500 focus:bg-background/80 rounded outline-none text-foreground transition-all duration-150"
                     >

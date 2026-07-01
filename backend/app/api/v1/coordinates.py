@@ -15,6 +15,7 @@ class CoordinateConvertRequest(BaseModel):
     y: float | str
     source_crs: str | None = None
     borehole_id: str = "preview"
+    coordinate_order: str | None = None
 
 
 class CoordinateConvertResponse(BaseModel):
@@ -45,6 +46,7 @@ async def convert_coordinate(payload: CoordinateConvertRequest) -> CoordinateCon
         payload.y,
         borehole_id=payload.borehole_id,
         source_crs=payload.source_crs,
+        coordinate_order=payload.coordinate_order,
     )
     valid = _is_number(lon) and _is_number(lat)
     message = None if valid else "좌표 변환 결과를 만들지 못했습니다. 원본 좌표와 좌표계를 확인해주세요."

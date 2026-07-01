@@ -1,6 +1,7 @@
 """시추공 라우터."""
 
 import json
+import re
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -61,9 +62,11 @@ class StratumInput(BaseModel):
 
 
 class BoreholeUpdate(BaseModel):
+    name: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     elevation: float | None = None
+    project_id: int | None = None
 
 
 class BoreholeOverrideUpdate(BoreholeUpdate):
@@ -96,6 +99,11 @@ class ByAreaRequest(BaseModel):
 
 class DuplicateMergeRequest(BaseModel):
     mode: str = "exact"
+
+
+class BoreholeMergeRequest(BaseModel):
+    keep_id: int
+    duplicate_ids: list[int]
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +142,45 @@ def _borehole_dict(b: Borehole, loc_json: str | None, *, include_strata: bool = 
             [_stratum_dict(s) for s in b.strata],
             key=lambda x: x["depth_top"],
         )
+        groundwater_depth = _legacy_groundwater_depth(b.strata)
+        data["groundwater_depth_bgl_m"] = groundwater_depth
+        data["groundwater_head_elevation_m"] = (
+            float(b.elevation) - groundwater_depth
+            if groundwater_depth is not None and b.elevation is not None
+            else None
+        )
+        data["groundwater_observed_at"] = None
     return data
+
+
+_GROUNDWATER_DEPTH_RE = re.compile(
+    r"(?:지하수위|water[_\s-]*(?:level|gl))['\"]?\s*[:=]\s*['\"]?\s*"
+    r"(?:GL\s*[-(]?\s*)?(-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_GROUNDWATER_MISSING_RE = re.compile(
+    r"(?:지하수위|water[_\s-]*(?:level|gl))['\"]?\s*[:=]\s*['\"]?\s*"
+    r"(?:N/?A|NONE|NULL|-)(?:['\",}\s]|$)",
+    re.IGNORECASE,
+)
+
+
+def _legacy_groundwater_depth(strata: list[Stratum]) -> float | None:
+    """Recover representative GL(-) groundwater depth from legacy raw_text.
+
+    Missing values remain None and therefore never become interpolation anchors.
+    """
+    for stratum in strata:
+        raw = stratum.raw_text or ""
+        if not raw or _GROUNDWATER_MISSING_RE.search(raw):
+            continue
+        match = _GROUNDWATER_DEPTH_RE.search(raw)
+        if not match:
+            continue
+        depth = float(match.group(1))
+        if depth >= 0:
+            return depth
+    return None
 
 
 def _stratum_dict(s: Stratum) -> dict:
@@ -653,6 +699,23 @@ async def get_borehole_source_pdf(
 
         doc = fitz.open(str(pdf_path))
         page_count = doc.page_count
+        import re as _re
+
+        def _norm(t: str) -> str:
+            t = (t or "").lower()
+            for _d in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe63\uff0d":
+                t = t.replace(_d, "-")
+            return _re.sub(r"\s+", "", t)
+
+        match_pages: list[int] = []
+        needle = _norm(borehole.name or "")
+        if needle:
+            for i in range(page_count):
+                try:
+                    if needle in _norm(doc[i].get_text("text")):
+                        match_pages.append(i + 1)
+                except Exception:  # noqa: BLE001
+                    continue
         doc.close()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"PDF 열기 실패: {exc}")
@@ -661,6 +724,8 @@ async def get_borehole_source_pdf(
         "job_id": job.id,
         "page_count": page_count,
         "file_name": pdf_display_name(job.file_path),
+        "borehole_name": borehole.name,
+        "match_pages": match_pages,
     }
 
 
@@ -682,6 +747,12 @@ async def update_borehole(
     if borehole is None:
         raise HTTPException(status_code=404, detail="시추공을 찾을 수 없습니다.")
 
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="시추공명은 비워둘 수 없습니다.")
+        borehole.name = name
+
     if body.latitude is not None or body.longitude is not None:
         loc_result = await db.execute(
             select(func.ST_AsGeoJSON(Borehole.location)).where(Borehole.id == borehole_id)
@@ -693,6 +764,14 @@ async def update_borehole(
 
     if body.elevation is not None:
         borehole.elevation = body.elevation
+
+    if body.project_id is not None and body.project_id != borehole.project_id:
+        target = (await db.execute(
+            select(Project).where(Project.id == body.project_id, Project.deleted_at.is_(None))
+        )).scalar_one_or_none()
+        if target is None:
+            raise HTTPException(status_code=404, detail="대상 프로젝트를 찾을 수 없습니다.")
+        borehole.project_id = body.project_id
 
     await db.commit()
     await db.refresh(borehole)
@@ -1044,6 +1123,33 @@ async def merge_exact_duplicate_boreholes(
     result["projects_bbox_updated"] = await _replace_project_bbox_ids(db, id_map)
     await db.commit()
     return result
+
+
+@router.post("/admin/merge")
+async def merge_selected_boreholes(
+    body: BoreholeMergeRequest,
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """선택한 시추공을 대표(keep_id)로 병합 — 링크/override/bbox 이관 후 나머지 삭제."""
+    if _current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="관리자만 시추공을 병합할 수 있습니다.")
+    keep_id = int(body.keep_id)
+    duplicate_ids = [int(i) for i in dict.fromkeys(body.duplicate_ids) if int(i) != keep_id]
+    if not duplicate_ids:
+        raise HTTPException(status_code=422, detail="병합할 대상 시추공이 없습니다.")
+    ids = [keep_id, *duplicate_ids]
+    found = set((await db.execute(
+        select(Borehole.id).where(Borehole.id.in_(ids), Borehole.deleted_at.is_(None))
+    )).scalars().all())
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"존재하지 않는 시추공: {missing}")
+    merged = await _merge_duplicate_boreholes(db, keep_id, duplicate_ids)
+    id_map = {dup: keep_id for dup in duplicate_ids}
+    projects_bbox_updated = await _replace_project_bbox_ids(db, id_map)
+    await db.commit()
+    return {**merged, "keep_id": keep_id, "projects_bbox_updated": projects_bbox_updated}
 
 
 @router.put("/{borehole_id}/project-overrides/{project_id}")

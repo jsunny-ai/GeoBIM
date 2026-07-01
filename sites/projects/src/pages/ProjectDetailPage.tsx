@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { useParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, Pencil, X, Building2, Compass, TrendingUp, FileUp, PenLine, ChevronRight, ExternalLink, Filter } from "lucide-react"
+import { ArrowLeft, Pencil, X, Building2, Compass, TrendingUp, FileUp, PenLine, ChevronDown, ChevronRight, ExternalLink, Filter } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { useProject } from "@/features/projects/hooks"
@@ -21,6 +21,50 @@ const UPLOAD_BASE = UPLOAD_URL
 
 function isProjectNew(borehole: Borehole) {
   return borehole.project_role ? borehole.project_role === "new" : Boolean(borehole.is_supplementary)
+}
+
+type BoreholeListGroup = {
+  key: string
+  label: string | null
+  items: Borehole[]
+}
+
+function uploadGroupLabel(borehole: Borehole) {
+  if (!borehole.registered_from_job_id) return "직접 등록"
+  const source = (borehole.source_file ?? "").toLowerCase()
+  const kind = source.includes("csv_uploads") || source.endsWith(".csv")
+    ? "CSV"
+    : source.endsWith(".xlsx") || source.endsWith(".xls")
+      ? "엑셀"
+      : "PDF"
+  return `${kind} 업로드 #${borehole.registered_from_job_id}`
+}
+
+function groupBoreholesByUpload(boreholes: Borehole[]): BoreholeListGroup[] {
+  const existing: Borehole[] = []
+  const uploads = new Map<string, BoreholeListGroup>()
+
+  boreholes.forEach((borehole) => {
+    if (!isProjectNew(borehole)) {
+      existing.push(borehole)
+      return
+    }
+
+    const key = borehole.registered_from_job_id
+      ? `upload-${borehole.registered_from_job_id}`
+      : "manual"
+    const group = uploads.get(key)
+    if (group) {
+      group.items.push(borehole)
+    } else {
+      uploads.set(key, { key, label: uploadGroupLabel(borehole), items: [borehole] })
+    }
+  })
+
+  return [
+    ...(existing.length ? [{ key: "existing", label: null, items: existing }] : []),
+    ...Array.from(uploads.values()).reverse(),
+  ]
 }
 
 // 배지 컴포넌트
@@ -72,6 +116,7 @@ export default function ProjectDetailPage() {
   const [editing, setEditing]         = useState(false)
   const [editingBase, setEditingBase] = useState<Borehole | null>(null)
   const [filter, setFilter]           = useState<FilterType>("all")
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set())
 
   const returnUrl = encodeURIComponent(`${PROJECTS_URL}/detail/${projectId}`)
   const uploadUrl = `${UPLOAD_BASE}/?project_id=${projectId}&return_url=${returnUrl}`
@@ -86,6 +131,16 @@ export default function ProjectDetailPage() {
   const origCount  = (boreholes ?? []).filter(b => !isProjectNew(b)).length
   const suppCount  = (boreholes ?? []).filter(b =>  isProjectNew(b)).length
   const totalCount = (boreholes ?? []).length
+  const boreholeGroups = groupBoreholesByUpload(filteredBoreholes)
+
+  function toggleGroup(key: string) {
+    setCollapsedGroups((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   function handleSelectBorehole(b: Borehole) {
     setSelected(b); setEditing(false); setEditingBase(null); setMainTab("existing")
@@ -192,24 +247,39 @@ export default function ProjectDetailPage() {
               <div className="flex-1 overflow-y-auto">
                 {isLoading && <div className="p-3 text-xs text-muted-foreground">로딩 중…</div>}
 
-                {filteredBoreholes.map(b => (
-                  <button key={b.id} onClick={() => handleSelectBorehole(b)}
-                    className={`w-full text-left px-3 py-2.5 text-xs hover:bg-accent transition-colors border-b border-border/40 ${
-                      selected?.id === b.id ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="font-medium truncate">{b.name}</span>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <BoreholeTypeBadge isSupplementary={isProjectNew(b)} status={b.data_status} />
-                        <BoreholeOriginBadge origin={b.data_origin} />
-                        <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                      </div>
-                    </div>
-                    <div className="text-muted-foreground mt-0.5">
-                      {b.strata.length}개 지층{b.elevation != null ? ` · ${b.elevation}m` : ""}
-                    </div>
-                  </button>
+                {boreholeGroups.map(group => (
+                  <Fragment key={group.key}>
+                    {group.label && (
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(group.key)}
+                        className="sticky top-0 z-10 flex w-full items-center gap-1.5 border-b border-stone-300 bg-stone-100 px-3 py-2 text-left text-[11px] font-semibold text-stone-800"
+                      >
+                        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${collapsedGroups.has(group.key) ? "-rotate-90" : ""}`} />
+                        <span className="truncate">{group.label}</span>
+                        <span className="ml-auto shrink-0 text-[10px] font-normal text-stone-600">{group.items.length}개</span>
+                      </button>
+                    )}
+                    {!collapsedGroups.has(group.key) && group.items.map(b => (
+                      <button key={b.id} onClick={() => handleSelectBorehole(b)}
+                        className={`w-full text-left px-3 py-2.5 text-xs hover:bg-accent transition-colors border-b border-border/40 ${
+                          selected?.id === b.id ? "bg-accent text-accent-foreground" : ""
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-medium truncate">{b.name}</span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <BoreholeTypeBadge isSupplementary={isProjectNew(b)} status={b.data_status} />
+                            <BoreholeOriginBadge origin={b.data_origin} />
+                            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                          </div>
+                        </div>
+                        <div className="text-muted-foreground mt-0.5">
+                          {b.strata.length}개 지층{b.elevation != null ? ` · ${b.elevation}m` : ""}
+                        </div>
+                      </button>
+                    ))}
+                  </Fragment>
                 ))}
 
                 {filteredBoreholes.length === 0 && !isLoading && (
@@ -410,10 +480,29 @@ export default function ProjectDetailPage() {
                               </tr>
                             </thead>
                             <tbody>
-                              {filteredBoreholes.map(b => {
-                                const maxDepth = b.strata.length > 0 ? Math.max(...b.strata.map(s => s.depth_bottom)) : 0
-                                return (
-                                  <tr key={b.id}
+                              {boreholeGroups.map(group => (
+                                <Fragment key={group.key}>
+                                  {group.label && (
+                                    <tr className="border-b border-stone-300 bg-stone-100">
+                                      <td colSpan={7} className="p-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleGroup(group.key)}
+                                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-xs font-semibold text-stone-800"
+                                        >
+                                          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${collapsedGroups.has(group.key) ? "-rotate-90" : ""}`} />
+                                          <span>{group.label}</span>
+                                          <span className="rounded-full border border-stone-300 bg-white px-1.5 py-0.5 text-[10px] font-normal text-stone-600">
+                                            {group.items.length}개 시추공
+                                          </span>
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  )}
+                                  {!collapsedGroups.has(group.key) && group.items.map(b => {
+                                    const maxDepth = b.strata.length > 0 ? Math.max(...b.strata.map(s => s.depth_bottom)) : 0
+                                    return (
+                                      <tr key={b.id}
                                     className={`border-b border-border/40 hover:bg-muted/20 transition-colors ${
                                       selected?.id === b.id
                                         ? "bg-stone-100"
@@ -445,9 +534,11 @@ export default function ProjectDetailPage() {
                                         주상도 보기
                                       </Button>
                                     </td>
-                                  </tr>
-                                )
-                              })}
+                                      </tr>
+                                    )
+                                  })}
+                                </Fragment>
+                              ))}
                             </tbody>
                           </table>
                           {filteredBoreholes.length === 0 && (

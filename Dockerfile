@@ -49,7 +49,8 @@ RUN pip install --upgrade pip \
     "pyproj>=3.6" \
     "opendataloader-pdf>=0.0.0" \
     "pillow>=10.0" \
-    "pytesseract>=0.3.13"
+    "pytesseract>=0.3.13" \
+    "openpyxl>=3.1"
 
 # ── 2. runtime ──────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -72,11 +73,11 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* \
  && rm -rf /wheels
 
-# 소스 복사 (backend/)
-COPY backend/ .
-
 # 비루트 사용자 (보안)
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser
+
+# 소스 복사 (backend/) — 복사 단계에서 소유권을 지정해 대용량 데이터 재귀 chown 방지
+COPY --chown=appuser:appuser backend/ .
 USER appuser
 
 # Alembic 마이그레이션 후 uvicorn 실행

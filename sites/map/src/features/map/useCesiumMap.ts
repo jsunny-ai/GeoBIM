@@ -31,6 +31,7 @@ export function useCesiumMap(
   const boreholesEntitiesRef = useRef<Cesium.Entity[]>([])
   const vworldLayerRef = useRef<Cesium.ImageryLayer | null>(null)
   const clusterDataSourceRef = useRef<Cesium.CustomDataSource | null>(null)
+  const lastAutoFitKeyRef = useRef<string | null>(null)
   
   // 편집 기능 상태
   const editRectangleRef = useRef<Cesium.Rectangle | null>(null)
@@ -213,6 +214,48 @@ export function useCesiumMap(
 
     viewer.scene.requestRender()
   }, [boreholes, vexag, radius, alpha, zMode, layerVisible])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || boreholes.length === 0 || isDrawing || editRectangleRef.current) return
+
+    let minLng = Infinity
+    let minLat = Infinity
+    let maxLng = -Infinity
+    let maxLat = -Infinity
+    let validCount = 0
+
+    for (const bh of boreholes) {
+      if (!Number.isFinite(bh.longitude) || !Number.isFinite(bh.latitude)) continue
+      minLng = Math.min(minLng, bh.longitude)
+      minLat = Math.min(minLat, bh.latitude)
+      maxLng = Math.max(maxLng, bh.longitude)
+      maxLat = Math.max(maxLat, bh.latitude)
+      validCount += 1
+    }
+
+    if (validCount === 0) return
+
+    const key = `${validCount}:${minLng.toFixed(5)},${minLat.toFixed(5)},${maxLng.toFixed(5)},${maxLat.toFixed(5)}`
+    if (lastAutoFitKeyRef.current === key) return
+    lastAutoFitKeyRef.current = key
+
+    const lngSpan = Math.max(maxLng - minLng, 0.01)
+    const latSpan = Math.max(maxLat - minLat, 0.01)
+    const padLng = lngSpan * 0.25
+    const padLat = latSpan * 0.25
+
+    viewer.camera.flyTo({
+      destination: Cesium.Rectangle.fromDegrees(
+        minLng - padLng,
+        minLat - padLat,
+        maxLng + padLng,
+        maxLat + padLat,
+      ),
+      duration: 1.0,
+    })
+    viewer.scene.requestRender()
+  }, [boreholes, isDrawing])
 
   // 3. 영역 그리기 (다각형 드로잉 도구)
   const startDrawing = () => {

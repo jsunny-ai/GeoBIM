@@ -35,6 +35,9 @@ export type PreviewRow = {
   tm_y?: number | string
   raw_x?: number | string
   raw_y?: number | string
+  coordinate_order?: string
+  water_level_gl?: number | string
+  water_level_el?: number | string
   "표고"?: number | string
   meta_crs?: string
 }
@@ -89,6 +92,8 @@ export type ManualLabel =
   | "x_coord"
   | "y_coord"
   | "elevation"
+  | "water_level_gl"
+  | "water_level_el"
   | "depth"
   | "top_depth"
   | "bottom_depth"
@@ -103,4 +108,4 @@ export type PreviewPoint = {
   crs?: string
 }
 
-export type Tab = "auto" | "manual"
+export type Tab = "auto" | "manual" | "csv"

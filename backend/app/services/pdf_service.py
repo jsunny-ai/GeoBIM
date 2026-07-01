@@ -11,7 +11,7 @@ from typing import Any
 
 import fitz
 from geoalchemy2.elements import WKTElement
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
@@ -159,10 +159,20 @@ class PdfService:
         is_supplementary: bool = False,
         job_id: int | None = None,
     ) -> dict[str, int]:
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        grouped: dict[tuple[str, float | None, float | None], list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             name = str(row.get("시추공명") or "UNKNOWN").strip() or "UNKNOWN"
-            grouped[name].append(row)
+            lon = _to_float(row.get("lon_wgs84"))
+            lat = _to_float(row.get("lat_wgs84"))
+            # Borehole names are not globally unique. Design-company files
+            # commonly reuse BH-1, BH-2, ... across different survey groups.
+            # Keep same-name boreholes separate by their physical position.
+            group_key = (
+                name,
+                round(lon, 7) if lon is not None else None,
+                round(lat, 7) if lat is not None else None,
+            )
+            grouped[group_key].append(row)
 
         borehole_count = 0
         created_borehole_count = 0
@@ -170,7 +180,7 @@ class PdfService:
         replaced_borehole_count = 0
         duplicate_count = 0
         stratum_count = 0
-        for name, borehole_rows in grouped.items():
+        for (name, _group_lon, _group_lat), borehole_rows in grouped.items():
             first = borehole_rows[0]
             lon = _to_float(first.get("lon_wgs84"))
             lat = _to_float(first.get("lat_wgs84"))
@@ -205,7 +215,15 @@ class PdfService:
                     job_id=job_id,
                 )
             else:
-                duplicate = _find_duplicate_borehole(db, name=name, lon=lon, lat=lat, elevation=elevation, rows=borehole_rows)
+                duplicate = _find_duplicate_borehole(
+                    db,
+                    project_id=project_id,
+                    name=name,
+                    lon=lon,
+                    lat=lat,
+                    elevation=elevation,
+                    rows=borehole_rows,
+                )
                 if duplicate is not None:
                     borehole = duplicate
                     duplicate_count += 1
@@ -230,7 +248,11 @@ class PdfService:
                     source_crs=_to_text(first.get("meta_crs")),
                     source_file=source_file,
                     is_supplementary=is_supplementary,
-                    data_origin="user_upload" if "temp_uploads" in str(source_file) else "public",
+                    data_origin=(
+                        "user_upload"
+                        if any(part in str(source_file) for part in ("temp_uploads", "csv_uploads"))
+                        else "public"
+                    ),
                 )
                 db.add(borehole)
                 db.flush()
@@ -247,12 +269,17 @@ class PdfService:
                 )
 
             # 공통 strata 삽입 (신규 생성 · 재추출 덮어쓰기 공용)
+            seen_strata: set[tuple[float, float, str]] = set()
             for row in sorted(borehole_rows, key=lambda r: _to_float(r.get("상심도")) or 0.0):
                 depth_top = _to_float(row.get("상심도"))
                 depth_bottom = _to_float(row.get("하심도"))
                 soil_type = _to_text(row.get("지층명")) or "미분류"
                 if depth_top is None or depth_bottom is None or depth_bottom <= depth_top:
                     continue
+                stratum_key = (round(depth_top, 6), round(depth_bottom, 6), soil_type)
+                if stratum_key in seen_strata:
+                    continue
+                seen_strata.add(stratum_key)
 
                 db.add(
                     Stratum(
@@ -665,18 +692,30 @@ def _find_same_source_borehole(
 def _find_duplicate_borehole(
     db: Session,
     *,
+    project_id: int,
     name: str,
     lon: float,
     lat: float,
     elevation: float | None,
     rows: list[dict[str, Any]],
 ) -> Borehole | None:
+    project_link_exists = (
+        select(ProjectBoreholeLink.id)
+        .where(
+            ProjectBoreholeLink.project_id == project_id,
+            ProjectBoreholeLink.borehole_id == Borehole.id,
+            ProjectBoreholeLink.deleted_at.is_(None),
+            ProjectBoreholeLink.project_role != "excluded",
+        )
+        .exists()
+    )
     point = func.ST_GeogFromText(f"SRID=4326;POINT({lon} {lat})")
     candidates = db.execute(
         select(Borehole)
         .options(selectinload(Borehole.strata))
         .where(
             Borehole.deleted_at.is_(None),
+            or_(Borehole.project_id == project_id, project_link_exists),
             func.ST_DWithin(Borehole.location, point, 2.0),
         )
         .limit(50)
@@ -1060,6 +1099,8 @@ _CROPPED_OCR_FALLBACK_LABELS = {
     "x_coord",
     "y_coord",
     "elevation",
+    "water_level_gl",
+    "water_level_el",
     "crs",
 }
 
@@ -1385,7 +1426,18 @@ def _choose_best_box_text(*, pymupdf_text: str, odl_text: str, ocr_text: str = "
         return candidates[0]
 
     field = field.lower()
-    if field in {"depth", "bottom_depth", "top_depth", "x_coord", "y_coord", "tm_x", "tm_y", "elevation"}:
+    if field in {
+        "depth",
+        "bottom_depth",
+        "top_depth",
+        "x_coord",
+        "y_coord",
+        "tm_x",
+        "tm_y",
+        "elevation",
+        "water_level_gl",
+        "water_level_el",
+    }:
         return max(candidates, key=_numeric_text_score)
     if field in {"stratum_name", "soil_type"}:
         return max(candidates, key=_strata_text_score)
@@ -1506,6 +1558,8 @@ def _metadata_from_fields(fields: dict[str, str], fallback_project_name: str) ->
         "raw_x": raw_x,
         "raw_y": raw_y,
         "elevation": clean_float(fields.get("elevation")),
+        "water_level_gl": clean_float(fields.get("water_level_gl")),
+        "water_level_el": clean_float(fields.get("water_level_el")),
         "lon_wgs84": lon,
         "lat_wgs84": lat,
         "tm_x": tmx,
@@ -1857,6 +1911,8 @@ def _build_stratum_row(*, meta: dict[str, Any], top: float, bottom: float, strat
         "경도": meta["raw_x"],
         "위도": meta["raw_y"],
         "표고": meta["elevation"],
+        "water_level_gl": meta.get("water_level_gl"),
+        "water_level_el": meta.get("water_level_el"),
         "상심도": top,
         "하심도": bottom,
         "지층명": stratum_name,

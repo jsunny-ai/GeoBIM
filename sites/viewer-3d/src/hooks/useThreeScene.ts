@@ -19,7 +19,8 @@ export function useThreeScene(containerRef: RefObject<HTMLDivElement | null>) {
     scene.background = new THREE.Color(0xf0ece4)
     sceneRef.current = scene
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true })
+    renderer.localClippingEnabled = true
     renderer.setSize(container.clientWidth, container.clientHeight)
     renderer.setPixelRatio(window.devicePixelRatio)
     

@@ -102,9 +102,19 @@ interface ViewerControlsProps {
   setVisibility: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
   showColumns: boolean
   setShowColumns: React.Dispatch<React.SetStateAction<boolean>>
+  showGroundwater: boolean
+  setShowGroundwater: React.Dispatch<React.SetStateAction<boolean>>
+  showGroundwaterMarkers: boolean
+  setShowGroundwaterMarkers: React.Dispatch<React.SetStateAction<boolean>>
+  groundwaterOpacity: number
+  setGroundwaterOpacity: React.Dispatch<React.SetStateAction<number>>
+  groundwaterObservationCount: number
+  groundwaterCanBuildSurface: boolean
   basementMode: "extend" | "unknown"
   setBasementMode: (mode: "extend" | "unknown") => void
   onOpenExport: () => void
+  sectionEnabled: boolean
+  onToggleSection: () => void
 }
 
 export const ViewerControls: React.FC<ViewerControlsProps> = ({
@@ -122,9 +132,19 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
   setVisibility,
   showColumns,
   setShowColumns,
+  showGroundwater,
+  setShowGroundwater,
+  showGroundwaterMarkers,
+  setShowGroundwaterMarkers,
+  groundwaterOpacity,
+  setGroundwaterOpacity,
+  groundwaterObservationCount,
+  groundwaterCanBuildSurface,
   basementMode,
   setBasementMode,
   onOpenExport,
+  sectionEnabled,
+  onToggleSection,
 }) => {
   return (
     <div style={panelStyle}>
@@ -172,6 +192,25 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
         }}
       >
         데이터 내보내기
+      </button>
+
+      <button
+        onClick={onToggleSection}
+        style={{
+          width: "100%",
+          padding: "7px 0",
+          borderRadius: 6,
+          background: sectionEnabled ? "rgba(8,145,178,.18)" : C.btnIdle,
+          border: `1px solid ${sectionEnabled ? "#0891b2" : C.btnIdleBd}`,
+          color: sectionEnabled ? "#0e7490" : C.secondary,
+          fontSize: 12,
+          fontWeight: 700,
+          cursor: "pointer",
+          fontFamily: "'Noto Sans KR',sans-serif",
+          marginBottom: 12,
+        }}
+      >
+        {sectionEnabled ? "수직 단면 편집" : "수직 단면"}
       </button>
 
       <div
@@ -364,6 +403,42 @@ export const ViewerControls: React.FC<ViewerControlsProps> = ({
           }}
         />
         시추공 기둥 표시
+      </div>
+
+      <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 12, color: C.tertiary, marginBottom: 6 }}>수리 정보</div>
+        <div
+          onClick={() => setShowGroundwater((value) => !value)}
+          style={{ display: "flex", alignItems: "center", fontSize: 12, cursor: "pointer", opacity: showGroundwater ? 1 : 0.45 }}
+        >
+          <span style={{ width: 13, height: 13, borderRadius: 3, marginRight: 8, background: "#22b8cf", border: "1px solid #0891b2" }} />
+          지하수 포화영역
+          <span style={{ marginLeft: "auto", fontSize: 10, color: C.tertiary }}>{showGroundwater ? "켬" : "끔"}</span>
+        </div>
+        <div
+          onClick={() => setShowGroundwaterMarkers((value) => !value)}
+          style={{ display: "flex", alignItems: "center", marginTop: 5, fontSize: 12, cursor: "pointer", opacity: showGroundwaterMarkers ? 1 : 0.45 }}
+        >
+          <span style={{ width: 13, height: 13, borderRadius: "50%", marginRight: 8, background: "#0284c7", border: "2px solid #bae6fd", boxSizing: "border-box" }} />
+          실측 수위 마커
+          <span style={{ marginLeft: "auto", fontSize: 10, color: C.tertiary }}>{showGroundwaterMarkers ? "켬" : "끔"}</span>
+        </div>
+        <div style={{ marginTop: 7, fontSize: 11, color: groundwaterCanBuildSurface ? C.secondary : C.red }}>
+          실측 {groundwaterObservationCount}개 · {groundwaterCanBuildSurface ? "솔리드 생성" : "3개 미만: 마커만 표시"}
+        </div>
+        <div style={{ marginTop: 7, fontSize: 11, color: C.tertiary }}>
+          투명도 {Math.round(groundwaterOpacity * 100)}%
+        </div>
+        <input
+          type="range"
+          min={0.15}
+          max={0.8}
+          step={0.05}
+          value={groundwaterOpacity}
+          disabled={!showGroundwater}
+          onChange={(event) => setGroundwaterOpacity(Number(event.target.value))}
+          style={{ width: "100%", accentColor: "#0891b2" }}
+        />
       </div>
     </div>
   )

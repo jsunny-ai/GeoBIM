@@ -145,6 +145,9 @@ class Project(Base, TimestampMixin):
     borehole_links: Mapped[list[ProjectBoreholeLink]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    virtual_boreholes: Mapped[list[ProjectVirtualBorehole]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     extraction_jobs: Mapped[list[PdfExtractionJob]] = relationship(back_populates="project")
 
 
@@ -344,6 +347,86 @@ class BoreholeRevision(Base, TimestampMixin):
     restored_from: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class ProjectVirtualBorehole(Base, TimestampMixin):
+    """Project-scoped interpretation control that is never an observed borehole."""
+
+    __tablename__ = "project_virtual_boreholes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    location: Mapped[str] = mapped_column(
+        Geography(geometry_type="POINT", srid=4326), nullable=False
+    )
+    elevation: Mapped[float] = mapped_column(Float, nullable=False)
+    total_depth: Mapped[float] = mapped_column(Float, nullable=False)
+    source_borehole_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("boreholes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    model_enabled: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
+    constraint_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="hard")
+    influence_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    influence_radius_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    purpose: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    interpretation_note: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="virtual_boreholes")
+    source_borehole: Mapped[Borehole | None] = relationship()
+    strata: Mapped[list[ProjectVirtualBoreholeStratum]] = relationship(
+        back_populates="virtual_borehole",
+        cascade="all, delete-orphan",
+        order_by="ProjectVirtualBoreholeStratum.sequence",
+    )
+    revisions: Mapped[list[ProjectVirtualBoreholeRevision]] = relationship(
+        back_populates="virtual_borehole", cascade="all, delete-orphan"
+    )
+
+
+class ProjectVirtualBoreholeStratum(Base, TimestampMixin):
+    __tablename__ = "project_virtual_borehole_strata"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    virtual_borehole_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("project_virtual_boreholes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    depth_top: Mapped[float] = mapped_column(Float, nullable=False)
+    depth_bottom: Mapped[float] = mapped_column(Float, nullable=False)
+    soil_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    strata_group: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    virtual_borehole: Mapped[ProjectVirtualBorehole] = relationship(back_populates="strata")
+
+
+class ProjectVirtualBoreholeRevision(Base, TimestampMixin):
+    __tablename__ = "project_virtual_borehole_revisions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    virtual_borehole_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("project_virtual_boreholes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    change_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_by_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+
+    virtual_borehole: Mapped[ProjectVirtualBorehole] = relationship(back_populates="revisions")
+
+
 class PdfTemplate(Base, TimestampMixin):
     """PDF 박스 추출 템플릿.
 
@@ -433,6 +516,9 @@ __all__ = [
     "ProjectBoreholeOverride",
     "ProjectBoreholeLink",
     "BoreholeRevision",
+    "ProjectVirtualBorehole",
+    "ProjectVirtualBoreholeStratum",
+    "ProjectVirtualBoreholeRevision",
     "PdfTemplate",
     "PdfExtractionJob",
 ]

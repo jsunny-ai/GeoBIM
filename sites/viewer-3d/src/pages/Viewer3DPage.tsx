@@ -1,15 +1,19 @@
-import { useRef, useState, useEffect, useMemo } from "react"
+import { useCallback, useRef, useState, useEffect, useMemo } from "react"
 import { BoreholeTable } from "../components/BoreholeTable"
 import { BoreholeEditPanel } from "../components/BoreholeEditPanel"
 import { DepthWarningModal } from "../components/DepthWarningModal"
 import { PdfComparePanel } from "../components/PdfComparePanel"
 import { DataExportModal } from "../components/DataExportModal"
+import { VirtualBoreholeManager } from "../components/VirtualBoreholeManager"
 import { ViewerControls, type Basemap } from "../components/ViewerControls"
+import { SectionControls } from "../components/SectionControls"
 import { useBoreholeData } from "../hooks/useBoreholeData"
 import { useGeoModel, type GeoModelSettings } from "../hooks/useGeoModel"
+import { useGroundwaterModel } from "../hooks/useGroundwaterModel"
+import { useSectionPlane } from "../hooks/useSectionPlane"
 import { useThreeScene } from "../hooks/useThreeScene"
 import { parseUrlParams } from "@/lib/parseUrl"
-import type { Borehole } from "@/lib/types"
+import { DEFAULT_VERTICAL_SECTION_STATE, type Borehole } from "@/lib/types"
 import { MAP_URL, apiUrl } from "@shared/urls"
 
 const C = {
@@ -24,7 +28,10 @@ const C = {
 const statusBar: React.CSSProperties = {
   position: "absolute",
   bottom: 14,
-  left: 14,
+  // 좌측 설정 패널(14px + 약 282px)의 오른쪽에서 시작해
+  // 수리 정보 토글과 불투명도 슬라이더를 가리지 않는다.
+  left: 310,
+  right: 14,
   background: "rgba(250,248,245,.93)",
   padding: "8px 13px",
   borderRadius: 7,
@@ -33,7 +40,10 @@ const statusBar: React.CSSProperties = {
   border: `1px solid ${C.border}`,
   zIndex: 10,
   fontFamily: "'Noto Sans KR',sans-serif",
-  maxWidth: "50vw",
+  maxWidth: "none",
+  maxHeight: 48,
+  overflowY: "auto",
+  boxSizing: "border-box",
 }
 
 const hint: React.CSSProperties = {
@@ -81,6 +91,9 @@ export default function Viewer3DPage() {
   const [basemap, setBasemap] = useState<Basemap>("Base")
   const [showColumns, setShowColumns] = useState(true)
   const [showDrape, setShowDrape] = useState(true)
+  const [showGroundwater, setShowGroundwater] = useState(true)
+  const [showGroundwaterMarkers, setShowGroundwaterMarkers] = useState(true)
+  const [groundwaterOpacity, setGroundwaterOpacity] = useState(0.42)
   const [renderMode, setRenderMode] = useState<"smooth" | "voxel">("smooth")
   const [modelSourceMode, setModelSourceMode] = useState<ModelSourceMode>("all")
   const [basementMode, setBasementMode] = useState<"extend" | "unknown">("extend") // 최초 진입/새로고침 시 연장(Leapfrog) 모드를 기본으로 표시. 미분류 유지는 사용자가 선택.
@@ -89,6 +102,10 @@ export default function Viewer3DPage() {
   const [compareBh, setCompareBh] = useState<(Borehole & { dem_elevation?: number }) | null>(null)
   const [editingBh, setEditingBh] = useState<(Borehole & { dem_elevation?: number }) | null>(null)
   const [isExportOpen, setIsExportOpen] = useState(false)
+  const [isVirtualManagerOpen, setIsVirtualManagerOpen] = useState(false)
+  const [isVirtualCopyPicking, setIsVirtualCopyPicking] = useState(false)
+  const [virtualCopySourceId, setVirtualCopySourceId] = useState<string | null>(null)
+  const [virtualCopyPickError, setVirtualCopyPickError] = useState("")
   const [depthModalDismissed, setDepthModalDismissed] = useState(false)
   const [visibility, setVisibility] = useState<Record<string, boolean>>({
     soil: true,
@@ -98,16 +115,32 @@ export default function Viewer3DPage() {
     hard_rock: true,
     unknown: true,
   })
+  const [sectionState, setSectionState] = useState(DEFAULT_VERTICAL_SECTION_STATE)
 
   const { sceneRef, cameraRef, controlsRef } = useThreeScene(containerRef)
-  const { boreholes, fetchStatus, fetchErr } = useBoreholeData(bbox, polygon, boreholeIds, projectId, reloadKey)
+  const { boreholes, virtualBoreholes, fetchStatus, fetchErr } = useBoreholeData(bbox, polygon, boreholeIds, projectId, reloadKey)
   const [bhState, setBhState] = useState<(Borehole & { dem_elevation?: number })[]>([])
 
+  const virtualDisplayBoreholes = useMemo(() => virtualBoreholes.map((row) => ({
+    ...row,
+    id: `virtual:${row.id}`,
+    project_id: String(row.project_id),
+    name: `◆ ${row.name}`,
+  } as unknown as Borehole & { dem_elevation?: number; is_virtual: true; virtual_id: number; model_enabled: boolean })), [virtualBoreholes])
+
   const modelBoreholes = useMemo(() => {
-    if (modelSourceMode === "existing") return bhState.filter((b) => !isProjectNewBorehole(b))
-    if (modelSourceMode === "new") return bhState.filter((b) => isProjectNewBorehole(b))
-    return bhState
-  }, [bhState, modelSourceMode])
+    const observed = modelSourceMode === "existing"
+      ? bhState.filter((b) => !isProjectNewBorehole(b))
+      : modelSourceMode === "new"
+        ? bhState.filter((b) => isProjectNewBorehole(b))
+        : bhState
+    return [...observed, ...virtualDisplayBoreholes.filter((row) => row.model_enabled)]
+  }, [bhState, modelSourceMode, virtualDisplayBoreholes])
+
+  const tableBoreholes = useMemo(
+    () => [...bhState, ...virtualDisplayBoreholes],
+    [bhState, virtualDisplayBoreholes],
+  )
 
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search)
@@ -188,6 +221,48 @@ export default function Viewer3DPage() {
     )
   }
 
+  const handleVirtualCopyPick = useCallback((id: string) => {
+    if (id.startsWith("virtual:")) {
+      setVirtualCopyPickError("가상 시추공은 복사 원본으로 선택할 수 없습니다. 기존 또는 신규 시추공을 선택해주세요.")
+      return
+    }
+    const source = bhState.find((row) => String(row.id) === id)
+    if (!source) {
+      setVirtualCopyPickError("선택한 시추공을 현재 프로젝트 데이터에서 찾을 수 없습니다.")
+      return
+    }
+    if (!source.strata?.length) {
+      setVirtualCopyPickError(`${source.name}에는 복사할 지층 데이터가 없습니다.`)
+      return
+    }
+    setVirtualCopySourceId(id)
+    setSelectedBh(id)
+    setVirtualCopyPickError("")
+    setIsVirtualCopyPicking(false)
+  }, [bhState])
+
+  const startVirtualCopyPicking = useCallback(() => {
+    setVirtualCopyPickError("")
+    setVirtualCopySourceId(null)
+    setIsVirtualCopyPicking(true)
+    setShowColumns(true)
+    setModelSourceMode("all")
+  }, [])
+
+  const cancelVirtualCopyPicking = useCallback(() => {
+    setIsVirtualCopyPicking(false)
+    setVirtualCopyPickError("")
+  }, [])
+
+  useEffect(() => {
+    if (!isVirtualCopyPicking) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") cancelVirtualCopyPicking()
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [cancelVirtualCopyPicking, isVirtualCopyPicking])
+
   const modelSettings: GeoModelSettings = {
     verticalExag,
     depthBelowMSL,
@@ -199,11 +274,61 @@ export default function Viewer3DPage() {
     basementMode,
     selectedBh,
     setSelectedBh,
+    pickMode: isVirtualCopyPicking ? "virtual-copy" : sectionState.enabled ? "section" : "normal",
+    onBoreholePick: handleVirtualCopyPick,
     setStatus,
     bhPosRef,
   }
 
-  const { focusBorehole } = useGeoModel(sceneRef, cameraRef, controlsRef, modelBoreholes, bbox, polygon, modelSettings, containerRef)
+  const {
+    focusBorehole,
+    dimsRef,
+    smoothMeshRef,
+    voxelMeshRef,
+    drapeRef,
+    bhGroupRef,
+    markerRef,
+    stratumGroupRef,
+  } = useGeoModel(sceneRef, cameraRef, controlsRef, modelBoreholes, bbox, polygon, modelSettings, containerRef)
+
+  const groundwaterModel = useGroundwaterModel(
+    sceneRef,
+    modelBoreholes,
+    bbox,
+    {
+      visible: showGroundwater,
+      showMarkers: showGroundwaterMarkers,
+      opacity: groundwaterOpacity,
+      verticalExag,
+      depthBelowMSL,
+    },
+  )
+
+  const sectionController = useSectionPlane({
+    sceneRef,
+    cameraRef,
+    controlsRef,
+    containerRef,
+    targets: {
+      dimsRef,
+      smoothMeshRef,
+      voxelMeshRef,
+      drapeRef,
+      bhGroupRef,
+      markerRef,
+      stratumGroupRef,
+      groundwaterGroupRef: groundwaterModel.groundwaterGroupRef,
+    },
+    state: sectionState,
+    setState: setSectionState,
+    verticalExag,
+    setStatus,
+  })
+
+  const maxSectionOffsetM = Math.max(
+    10,
+    Math.hypot(dimsRef.current.lngWidthM, dimsRef.current.latWidthM) / 2,
+  )
 
   // ── 항상 viewport div를 DOM에 유지 ──────────────────────────────────────
   // useThreeScene의 effect 의존성이 [containerRef](ref 객체)라서
@@ -267,10 +392,49 @@ export default function Viewer3DPage() {
               setVisibility={setVisibility}
               showColumns={showColumns}
               setShowColumns={setShowColumns}
+              showGroundwater={showGroundwater}
+              setShowGroundwater={setShowGroundwater}
+              showGroundwaterMarkers={showGroundwaterMarkers}
+              setShowGroundwaterMarkers={setShowGroundwaterMarkers}
+              groundwaterOpacity={groundwaterOpacity}
+              setGroundwaterOpacity={setGroundwaterOpacity}
+              groundwaterObservationCount={groundwaterModel.observationCount}
+              groundwaterCanBuildSurface={groundwaterModel.canBuildSurface}
               basementMode={basementMode}
               setBasementMode={setBasementMode}
               onOpenExport={() => setIsExportOpen(true)}
+              sectionEnabled={sectionState.enabled}
+              onToggleSection={() => {
+                if (isVirtualCopyPicking) cancelVirtualCopyPicking()
+                if (sectionState.enabled) sectionController.resetSection()
+                else sectionController.redrawSection()
+              }}
             />
+
+            {sectionState.enabled && (
+              <SectionControls
+                state={sectionState}
+                azimuth={sectionController.metrics.azimuth}
+                lengthM={sectionController.metrics.lengthM}
+                maxOffsetM={maxSectionOffsetM}
+                onChange={(patch) => setSectionState((previous) => ({ ...previous, ...patch }))}
+                onRedraw={sectionController.redrawSection}
+                onPreset={(axis) => {
+                  const { boxW, boxD } = dimsRef.current
+                  setSectionState((previous) => ({
+                    ...previous,
+                    enabled: true,
+                    interactionMode: "editing",
+                    start: axis === "x" ? { x: -boxW / 2, z: 0 } : { x: 0, z: -boxD / 2 },
+                    end: axis === "x" ? { x: boxW / 2, z: 0 } : { x: 0, z: boxD / 2 },
+                    offsetM: 0,
+                  }))
+                  setStatus(axis === "x" ? "동–서 수직 단면을 생성했습니다." : "남–북 수직 단면을 생성했습니다.")
+                }}
+                onFocus={sectionController.focusSection}
+                onReset={sectionController.resetSection}
+              />
+            )}
 
             <div style={hint}>
               <div>마우스 좌클릭 + 드래그 = 3D 회전</div>
@@ -361,17 +525,66 @@ export default function Viewer3DPage() {
 
       {!showLoadingOverlay && !showErrorOverlay && (
         <BoreholeTable
-          boreholes={bhState}
+          boreholes={tableBoreholes}
           selectedBh={selectedBh}
           setSelectedBh={setSelectedBh}
-          focusBorehole={focusBorehole}
+          focusBorehole={(id) => {
+            if (isVirtualCopyPicking) handleVirtualCopyPick(String(id))
+            else focusBorehole(String(id))
+          }}
           onUpdateElevation={handleUpdateElevation}
           onInspectData={(b) => setCompareBh(b)}
           onEditData={(b) => {
+            if ((b as any).is_virtual) {
+              setIsVirtualManagerOpen(true)
+              return
+            }
             setEditingBh(b)
             setSelectedBh(String(b.id))
           }}
         />
+      )}
+
+      {!showLoadingOverlay && !showErrorOverlay && projectId && (
+        <button
+          onClick={() => setIsVirtualManagerOpen(true)}
+          style={{ position: "absolute", right: 334, top: 178, zIndex: 20, border: "1px solid #7c3aed", borderRadius: 5, padding: "6px 10px", background: "#f3e8ff", color: "#6d28d9", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+        >
+          가상 시추공 관리 ({virtualBoreholes.length})
+        </button>
+      )}
+
+      {isVirtualManagerOpen && projectId && (
+        <VirtualBoreholeManager
+          projectId={projectId}
+          observed={bhState}
+          virtualBoreholes={virtualBoreholes}
+          isPickingFromScene={isVirtualCopyPicking}
+          sceneCopySourceId={virtualCopySourceId}
+          onStartPickingFromScene={startVirtualCopyPicking}
+          onClose={() => {
+            cancelVirtualCopyPicking()
+            setIsVirtualManagerOpen(false)
+          }}
+          onChanged={() => setReloadKey((key) => key + 1)}
+        />
+      )}
+
+      {isVirtualManagerOpen && isVirtualCopyPicking && (
+        <div style={{
+          position: "absolute", top: 18, left: "50%", transform: "translateX(-50%)",
+          zIndex: 110, minWidth: 420, padding: "12px 14px", borderRadius: 8,
+          background: "rgba(76,29,149,.95)", color: "#fff",
+          boxShadow: "0 8px 24px rgba(0,0,0,.25)", fontSize: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <b style={{ flex: 1 }}>복사할 기존 또는 신규 시추공을 3D 화면에서 선택하세요.</b>
+            <button onClick={cancelVirtualCopyPicking} style={{ border: "1px solid #ddd6fe", borderRadius: 5, padding: "5px 9px", background: "#fff", color: "#6d28d9", cursor: "pointer" }}>
+              선택 취소 (Esc)
+            </button>
+          </div>
+          {virtualCopyPickError && <div style={{ marginTop: 7, color: "#fecaca" }}>{virtualCopyPickError}</div>}
+        </div>
       )}
 
       {!showLoadingOverlay && !showErrorOverlay && editingBh && (

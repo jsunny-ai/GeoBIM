@@ -29,6 +29,8 @@ export const MANUAL_LABELS: { value: ManualLabel; label: string }[] = [
   { value: "x_coord", label: "X 좌표" },
   { value: "y_coord", label: "Y 좌표" },
   { value: "elevation", label: "표고" },
+  { value: "water_level_gl", label: "지하수위 GL" },
+  { value: "water_level_el", label: "지하수위 EL" },
   { value: "depth", label: "심도 열" },
   { value: "stratum_name", label: "지층명 열" },
   { value: "crs", label: "기준좌표계" },
@@ -37,4 +39,5 @@ export const MANUAL_LABELS: { value: ManualLabel; label: string }[] = [
 export const TABS: { value: Tab; label: string }[] = [
   { value: "auto", label: "자동 파싱" },
   { value: "manual", label: "직접 지정" },
+  { value: "csv", label: "CSV/엑셀" },
 ]

@@ -133,6 +133,7 @@ export default function SupplementPage() {
           borehole_ids: [],
           layers: exportOpts.layers,
           mode: exportOpts.mode,
+          data_type: "cogo_points",
         }),
       })
 

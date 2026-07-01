@@ -59,6 +59,7 @@ interface BoreholeTableProps {
   focusBorehole: (id: string) => void
   onUpdateElevation?: (bhId: string, newElev: number) => Promise<void>
   onEditData?: (b: Borehole & { dem_elevation?: number }) => void
+  onManageVirtual?: () => void
   onInspectData?: (b: Borehole & { dem_elevation?: number }) => void // [v4.2] PDF 대조 패널 열기
 }
 
@@ -70,8 +71,9 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
   onUpdateElevation,
   onInspectData,
   onEditData,
+  onManageVirtual,
 }) => {
-  const [filterMode, setFilterMode] = useState<"all" | "existing" | "new" | "warn" | "edited">("all")
+  const [filterMode, setFilterMode] = useState<"all" | "existing" | "new" | "virtual" | "warn" | "edited">("all")
   const [editingBhId, setEditingBhId] = useState<string | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
@@ -115,15 +117,17 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
   const isRevised = (b: Borehole) => (b as any).data_status === "revised"
   const isProjectNew = (b: Borehole) =>
     (b as any).project_role ? (b as any).project_role === "new" : Boolean((b as any).is_supplementary)
+  const isVirtual = (b: Borehole) => Boolean((b as any).is_virtual)
 
   // 2. 필터링 대상 시추공 분류
   const filteredBoreholes = boreholes.filter((b) => {
     const { diff } = getElevationInfo(b)
-    if (filterMode === "existing") return !isProjectNew(b)
-    if (filterMode === "new") return isProjectNew(b)
-    if (filterMode === "warn") return diff >= 0.5 || isDepthWarn(b)
-    if (filterMode === "edited") return editLogs[b.id] !== undefined || isRevised(b)
-    return true
+    if (filterMode === "existing") return !isVirtual(b) && !isProjectNew(b)
+    if (filterMode === "new") return !isVirtual(b) && isProjectNew(b)
+    if (filterMode === "virtual") return isVirtual(b)
+    if (filterMode === "warn") return !isVirtual(b) && (diff >= 0.5 || isDepthWarn(b))
+    if (filterMode === "edited") return !isVirtual(b) && (editLogs[b.id] !== undefined || isRevised(b))
+    return !isVirtual(b)
   })
 
   const warnCount = boreholes.filter((b) => getElevationInfo(b).diff >= 0.5 || isDepthWarn(b)).length
@@ -173,16 +177,18 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
           )}
         </div>
         <div style={{ fontSize: 11, color: C.tertiary, marginTop: 2 }}>
-          {boreholes.length}개 발견 · 행 클릭 시 시추공 카메라 포커스
+          실제 {boreholes.filter((b) => !(b as any).is_virtual).length}개
+          {" · "}가상 {boreholes.filter((b) => Boolean((b as any).is_virtual)).length}개
         </div>
       </div>
 
       {/* B. 필터링 버튼 바 */}
       <div style={{ display: "flex", padding: "6px 10px", gap: 4, borderBottom: `1px solid ${C.border}`, background: "rgba(242,237,230,.6)" }}>
-        {(["all", "existing", "new", "warn", "edited"] as const).map((mode) => {
+        {(["all", "existing", "new", "virtual", "warn", "edited"] as const).map((mode) => {
           const active = filterMode === mode
           const label = mode === "all" ? "전체" : mode === "existing" ? "기존" : mode === "new" ? "신규" : mode === "warn" ? "경고" : "보정"
           const labels = { all: "전체", warn: "경고대상", edited: "보정이력" }
+          const displayLabel = mode === "virtual" ? "가상" : label
           return (
             <button
               key={mode}
@@ -205,7 +211,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                 fontFamily: "'Noto Sans KR',sans-serif",
               }}
             >
-              {label}
+              {displayLabel}
             </button>
           )
         })}
@@ -313,7 +319,7 @@ export const BoreholeTable: React.FC<BoreholeTableProps> = ({
                           />
                         )
                       })}
-                      {onEditData && (
+                      {onEditData && !isVirtual(b) && (
                         <button
                           onClick={(e) => { e.stopPropagation(); onEditData(b) }}
                           title="지층 데이터 편집"
